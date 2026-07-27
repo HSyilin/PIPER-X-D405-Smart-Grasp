@@ -23,6 +23,8 @@ cannot be reconstructed exactly from this repository.
   `agx_arm_ros` workspace and made the control gate monitor arm and gripper actions.
 - Added algorithm tests for HSV masks, depth units/projection, OBB/grasp geometry,
   stability filtering, and hand-eye validation spans.
+- Added `RELEASE_MANIFEST.md` with exact cross-repository commits, checksums,
+  excluded local state, validation evidence, and non-destructive rollback steps.
 
 ### Changed
 
