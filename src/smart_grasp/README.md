@@ -13,6 +13,22 @@ rounded block with a Piper-X, AgileX gripper, and eye-in-hand RealSense D405.
 The legacy direct `/control/move_p` executor remains available only as the
 explicit `grasp_executor_node` diagnostic executable. No default launch starts it.
 
+## 当前进度
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| 接口 `smart_grasp_interfaces` | ✅ 完成 | `DetectedObject.msg` + `PickObject.action`，已编译 |
+| 感知 `smart_grasp` | ✅ 已实现 | HSV / YOLO-Seg 统一后端；ArUco 仅为独立诊断脚本 |
+| 深度/抓取几何 | ✅ 完成 | `depth_geometry` 反投影 + `grasp_geometry` 质心/尺寸→TCP 抓取姿态 |
+| 手眼 / 校验 | ✅ 已实现 | 发布动态 `base_link -> tcp_link` 和静态相机外参；通过 `/smart_grasp/validation/record`、`reset` 采样校验 |
+| MoveIt 执行 `smart_grasp_moveit` | ✅ 已实现 | C++ `pick_server` 实现从检测、规划、接近、夹持到抬升的完整防护状态机 |
+| 编排/配置 `smart_grasp_bringup` | ✅ 完成 | `smart_grasp_system.launch.py` 统一编排 + 校验门控 |
+| 稳定性门控 | ✅ 完成 | `stability.py` 多帧稳定性判断 |
+| 调参器 `param_tuner` | ✅ 完成 | SSH 友好 `name=value` 交互改参（已修重复 `rclpy.init` 崩溃 bug） |
+| **真实抓取前待补** | 🟡 阻塞 | 见下「Required validation」：`table_*` 实测值、`calibration_validated:=true`、目标配置 |
+
+> 外部依赖已对齐：`agx_arm_msgs::GripperStatus` 字段、`agx_arm_moveit` 的 SRDF 组 `arm` / link `tcp_link`、`gripper_base/link1/link2` 均匹配；`agx_arm_ws` 已编译。
+
 ## Build
 
 ```bash
@@ -39,12 +55,15 @@ source ~/grasp_ws/install/setup.bash
 ros2 launch smart_grasp_bringup smart_grasp_system.launch.py
 ```
 
-Perception without starting the arm/MoveIt:
+2-D perception without starting the arm/MoveIt or requiring depth/TF:
 
 ```bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  use_driver:=false use_moveit:=false use_pick_server:=false use_rviz:=false
+ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=false
 ```
+
+This camera-only mode publishes HSV/YOLO masks, pixel bounding boxes, and debug
+images. Full metric dimensions require aligned depth and a valid timestamped
+`camera_color_optical_frame -> base_link` transform.
 
 Run a plan-only pick after a stable detection is visible:
 
@@ -60,7 +79,9 @@ ros2 action send_goal /smart_grasp/pick \
    `smart_grasp_bringup/config/grasp.yaml`.
 2. Observe one fixed object from 5-8 arm poses. Confirm base-frame position span
    is below 20 mm and orientation span below 3 degrees.
-3. Set `validated: true` in `handeye_20260725.yaml` only after that test.
+3. After that test, set `validated: true` in `handeye_20260725.yaml`
+   (calibration/validator flag) **and** arm the server with the launch arg
+   `calibration_validated:=true` — this second flag is what actually gates execution.
 4. Enable the arm manually and retain `speed_percent:=10` for staged commissioning.
 
 Both the action goal (`execute: true`) and the server arming parameter must be
@@ -104,3 +125,57 @@ ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
 The model must provide instance masks for `blue_block`. A missing model or
 Ultralytics installation is a startup error; the node never falls back to HSV
 during a real action.
+
+## 调试与调参
+
+### 看图像 / 调试 TF
+
+- 只看感知（不起机械臂 / MoveIt）:
+  ```bash
+  ros2 launch smart_grasp_bringup camera_only.launch.py
+  ```
+- RViz 里通过 Image、TF、MarkerArray 和 PointCloud2 显示分别查看
+  `/smart_grasp/debug_image`、TF、`/smart_grasp/debug_markers` 和
+  `/smart_grasp/object_cloud`。自定义 `/smart_grasp/detections` 不能直接作为标记显示。
+- 无 DISPLAY 的 SSH 远程且已安装 `web_video_server` 时，可另起
+  `ros2 run web_video_server web_video_server`，
+  浏览器开 `http://localhost:8080/stream_viewer?topic=/smart_grasp/debug_image`
+  （SSH 用 `ssh -L 8080:localhost:8080` 转发端口）。
+
+### HSV 会计算哪些数据
+
+- HSV 后端自动计算每个蓝色轮廓的像素面积、凸度、矩形度、二维外接矩形和
+  图像内角度。这些数据用于二维筛选，单位是像素，不是物体的实际毫米尺寸。
+- 完整 RGB-D 模式会读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
+  转换到 `base_link` 后通过 PCA/OBB 自动计算物体长、宽、高，并写入
+  `/smart_grasp/detections.size`；调试图会显示毫米尺寸。
+- `camera_only.launch.py` 没有深度和机械臂 TF，因此只能显示二维检测框和角度，
+  不会产生可信的实际长宽高，也不会把像素面积当作物理面积。
+
+### 运行时改抓取参数
+`pick_server` 的抓取距离、夹爪、安全阈值和场景参数在每次 action goal 中读取，
+运行时修改后对下一次 goal 生效。`planning_group`、`base_frame`、
+`end_effector_link`、`planner_id`、`planning_time`、`planning_attempts`、
+`gripper_action` 和 `joint_state_topic` 在节点初始化时读取，修改后必须重启
+`pick_server`。三种调参方式：
+- **SSH 友好（推荐）**：交互式 `name=value` 改参，自动识别
+  int / float / bool / list / str：
+  ```bash
+  ros2 run smart_grasp param_tuner smart_grasp_pick_server
+  # smart_grasp_pick_server> grasp_depth=0.03
+  # smart_grasp_pick_server> list        # 看全部参数
+  # smart_grasp_pick_server> quit
+  ```
+- **本机有 DISPLAY 且已安装插件**：`ros2 run rqt_reconfigure rqt_reconfigure`（左侧选
+  `smart_grasp_pick_server`，滑条/文本框直接改）。
+- **命令行一行**：`ros2 param set /smart_grasp_pick_server grasp_depth 0.03`。
+> 常用参数：`grasp_depth`(夹爪下探深度)、`pregrasp_distance`、`lift_height`、
+> `gripper_open/close/force`、`wrist_jump_threshold`、`cartesian_step`、`planning_time`。
+
+### 目标 / 场景配置
+
+- action goal 中的 `target_class`（如 `blue_block`）只负责选择检测类别。
+- HSV、目标期望尺寸和容差由 `config/perception.yaml` 提供，抓取和场景参数由
+  `config/grasp.yaml` 提供。
+- `config/target_blue_block.yaml` 当前保留为版本化目标配置参考，尚未接入 launch；
+  不应把它误认为 action goal 的替代品，也不在未确认配置归属时删除。

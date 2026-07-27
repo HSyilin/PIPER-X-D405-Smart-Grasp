@@ -92,6 +92,18 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
 - `handeye_20260725.yaml` 保持 `validated: false`。
 - 桌面碰撞参数保持无效哨兵值，真机执行门默认关闭。
 
+## 未发布修复记录（2026-07-27）
+
+- 修复 `param_tuner` 重复初始化、参数枚举、数组类型赋值、不存在参数识别和
+  临时节点清理问题。
+- 校正包内 README 的后端、TF 校验服务、MoveIt 状态机、RViz 话题、动态参数
+  生效范围和无机械臂感知说明，并补充 HSV 二维测量与 RGB-D 三维尺寸的边界。
+- 新增 `test_param_tuner.py`，当前直接 pytest 回归结果为 `12 passed`；
+  `smart_grasp` 包构建成功，临时 ROS 2 参数节点上的 `list`、浮点、整数数组和
+  不存在参数路径均通过端到端验证。
+- 本记录仍属于 `Unreleased`，随本次修复提交保存但尚未建立发布标签；没有修改
+  或推送官方源码仓库。
+
 ## 查看与无破坏回档
 
 ```bash

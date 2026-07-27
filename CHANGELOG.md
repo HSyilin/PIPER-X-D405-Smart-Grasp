@@ -10,9 +10,17 @@ cannot be reconstructed exactly from this repository.
 
 - Added `PROJECT_RULES.md` to make the no-upstream-push, traceability/rollback,
   and minimal-invasive-change-with-approval requirements persistent.
+- Corrected the package README to match the implemented HSV/YOLO backends, TF
+  validation services, MoveIt state machine, RViz topics, runtime parameter
+  behavior, and camera-only capability boundary.
+- Documented that HSV computes pixel contour geometry while aligned depth and
+  PCA/OBB provide metric object length, width, and height.
 
 ### Fixed
 
+- Fixed `param_tuner` double initialization, parameter enumeration, typed array
+  assignment, missing-parameter handling, and temporary-node cleanup.
+- Added regression coverage for ROS parameter array conversion and display.
 - Added an opt-in camera-only launch and detector path for smooth 2-D HSV/YOLO
   diagnostics before the robot and hand-eye TF chain are connected. Production
   RGB-D/TF behavior remains unchanged by default.
