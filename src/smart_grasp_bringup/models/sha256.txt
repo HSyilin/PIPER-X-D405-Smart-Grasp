@@ -1,0 +1,1 @@
+# Run: sha256sum blue_block_seg.pt > sha256.txt

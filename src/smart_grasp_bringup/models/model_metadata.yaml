@@ -1,0 +1,6 @@
+model: blue_block_seg.pt
+task: segment
+class_name: blue_block
+input_size: 640
+trained_at: null
+dataset_version: null

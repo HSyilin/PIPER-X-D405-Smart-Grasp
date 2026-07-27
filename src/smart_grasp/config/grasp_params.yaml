@@ -1,0 +1,17 @@
+smart_grasp_detector:
+  ros__parameters:
+    detector_backend: hsv
+    target_class: blue_block
+    hsv_lower: [90, 80, 50]
+    hsv_upper: [135, 255, 255]
+    min_contour_area: 500.0
+    min_solidity: 0.85
+    min_rectangularity: 0.65
+    min_depth: 0.08
+    max_depth: 0.60
+    mask_erode_pixels: 3
+    min_depth_points: 500
+    min_depth_valid_ratio: 0.60
+    expected_size: [0.060, 0.040, 0.040]
+    size_tolerance: 0.012
+    table_height: -999.0

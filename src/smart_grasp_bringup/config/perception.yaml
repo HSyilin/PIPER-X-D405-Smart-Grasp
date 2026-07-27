@@ -1,0 +1,35 @@
+smart_grasp_detector:
+  ros__parameters:
+    detector_backend: hsv
+    target_class: blue_block
+    hsv_lower: [90, 80, 50]
+    hsv_upper: [135, 255, 255]
+    min_contour_area: 500.0
+    min_solidity: 0.85
+    min_rectangularity: 0.65
+    yolo_model: ""
+    yolo_class: blue_block
+    yolo_confidence: 0.70
+    min_depth: 0.08
+    max_depth: 0.60
+    depth_scale: 0.001
+    mask_erode_pixels: 3
+    min_depth_points: 500
+    min_depth_valid_ratio: 0.60
+    expected_size: [0.060, 0.040, 0.040]
+    size_tolerance: 0.012
+    # -999 means unknown. Fill the measured table top Z in base_link before execution.
+    table_height: -999.0
+    table_ransac_threshold: 0.004
+    stability_frames: 10
+    position_outlier_radius: 0.020
+    max_position_span: 0.015
+    max_yaw_span_deg: 5.0
+    ambiguity_score_gap: 0.10
+    grasp_depth: 0.020
+    tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
+    base_frame: base_link
+    camera_frame: camera_color_optical_frame
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    info_topic: /camera/camera/color/camera_info

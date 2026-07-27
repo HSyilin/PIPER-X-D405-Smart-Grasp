@@ -1,0 +1,9 @@
+std_msgs/Header header
+uint32 track_id
+string class_name
+float32 confidence
+geometry_msgs/PoseWithCovariance pose
+geometry_msgs/Vector3 size
+float32 depth_valid_ratio
+bool stable
+string rejection_reason

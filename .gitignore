@@ -1,0 +1,29 @@
+# colcon outputs
+/build/
+/install/
+/log/
+
+# Python/test caches
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+.pytest_cache/
+
+# Editor and OS files
+.idea/
+.vscode/
+*~
+*.swp
+
+# Runtime captures and generated models
+*.bag
+*.db3
+*.mcap
+src/smart_grasp_bringup/models/*.pt
+src/smart_grasp_bringup/models/*.onnx
+src/smart_grasp_bringup/models/*.engine
+
+# Keep the model directory documentation and integrity metadata.
+!src/smart_grasp_bringup/models/README.md
+!src/smart_grasp_bringup/models/model_metadata.yaml
+!src/smart_grasp_bringup/models/sha256.txt

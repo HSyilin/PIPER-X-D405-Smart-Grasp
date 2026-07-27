@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>smart_grasp_bringup</name>
+  <version>0.2.0</version>
+  <description>Launch and versioned configuration for smart grasp.</description>
+  <maintainer email="mdz@todo.todo">mdz</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>agx_arm_moveit</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>smart_grasp</exec_depend>
+  <exec_depend>smart_grasp_moveit</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -1,0 +1,16 @@
+version: "2026-07-25_px_connected"
+method: eye_in_hand
+validated: false
+parent_frame: tcp_link
+camera_link_frame: camera_link
+optical_frame: camera_color_optical_frame
+
+# Hand-eye result: T_tcp_camera_color_optical.
+tcp_to_color_optical:
+  translation: [-0.018045765939069265, -0.07719211627055529, 0.05301916352619015]
+  quaternion_xyzw: [-0.17199286517693602, -0.005240348849626542, 0.03659502118367583, 0.984404285594455]
+
+# D405 internal TF sampled on 2026-07-25: T_camera_link_camera_color_optical.
+camera_link_to_color_optical:
+  translation: [-0.000010075837963086087, 0.000009918093383021187, 0.000009975385182769969]
+  quaternion_xyzw: [-0.5034506598376004, 0.4971554700602411, -0.49839898201872546, 0.5009713828363491]
