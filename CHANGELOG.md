@@ -4,6 +4,13 @@ All notable changes to the smart grasp workspace are recorded here. This
 workspace started Git tracking at version 0.2.0, so earlier untracked prototypes
 cannot be reconstructed exactly from this repository.
 
+## Unreleased
+
+### Documentation
+
+- Added `PROJECT_RULES.md` to make the no-upstream-push, traceability/rollback,
+  and minimal-invasive-change-with-approval requirements persistent.
+
 ## 0.2.0 - 2026-07-26
 
 ### Added
