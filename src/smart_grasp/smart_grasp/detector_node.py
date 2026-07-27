@@ -33,7 +33,7 @@ from smart_grasp.depth_geometry import (
     transform_points,
 )
 from smart_grasp.detection_backends import HsvBackend, YoloSegBackend
-from smart_grasp.stability import PoseStabilityWindow
+from smart_grasp.stability import PoseStabilityWindow, SizeStabilityWindow
 from smart_grasp_interfaces.msg import DetectedObject
 
 
@@ -121,6 +121,7 @@ class DetectorNode(Node):
             "min_depth_points": 500,
             "min_depth_valid_ratio": 0.60,
             "point_outlier_radius": 0.030,
+            "tf_lookup_timeout": 0.10,
             "expected_size": [0.060, 0.040, 0.040],
             "size_tolerance": 0.012,
             "table_height": -999.0,
@@ -129,6 +130,8 @@ class DetectorNode(Node):
             "position_outlier_radius": 0.020,
             "max_position_span": 0.015,
             "max_yaw_span_deg": 5.0,
+            "size_outlier_tolerance": 0.012,
+            "max_size_span": 0.015,
             "ambiguity_score_gap": 0.10,
             "grasp_depth": 0.020,
             "tcp_to_grasp_xyz": [0.0, 0.0, 0.1425],
@@ -208,7 +211,9 @@ class DetectorNode(Node):
             self.get_parameter("base_frame").value,
             source_frame,
             rclpy.time.Time.from_msg(stamp),
-            timeout=Duration(seconds=0.10),
+            timeout=Duration(
+                seconds=float(self.get_parameter("tf_lookup_timeout").value)
+            ),
         ).transform
         return matrix_from_transform(
             [transform.translation.x, transform.translation.y, transform.translation.z],
@@ -233,11 +238,16 @@ class DetectorNode(Node):
                 "window": PoseStabilityWindow(
                     self.get_parameter("stability_frames").value,
                     self.get_parameter("position_outlier_radius").value,
-                )
+                ),
+                "size_window": SizeStabilityWindow(
+                    self.get_parameter("stability_frames").value,
+                    self.get_parameter("size_outlier_tolerance").value,
+                ),
             }
         self.tracks[best_id]["center"] = center
         self.tracks[best_id]["last"] = now
-        return best_id, self.tracks[best_id]["window"]
+        track = self.tracks[best_id]
+        return best_id, track["window"], track["size_window"]
 
     def _invalid_detection(self, image_msg, instance, reason, valid_ratio=0.0):
         msg = DetectedObject()
@@ -370,13 +380,26 @@ class DetectorNode(Node):
             self._invalid_detection(image_msg, instance, "INVALID_DEPTH", valid_ratio)
             return None
 
-        track_id, window = self._assign_track(box.center)
+        track_id, window, size_window = self._assign_track(box.center)
         window.add(box.center, box.yaw)
         stability = window.result(
             self.get_parameter("max_position_span").value,
             math.radians(self.get_parameter("max_yaw_span_deg").value),
         )
-        msg = self._make_detection(image_msg, instance, box, track_id, valid_ratio, stability)
+        size_window.add(box.size)
+        size_stability = size_window.result(
+            self.get_parameter("max_size_span").value
+        )
+        box.size = size_stability.median_size
+        msg = self._make_detection(
+            image_msg,
+            instance,
+            box,
+            track_id,
+            valid_ratio,
+            stability,
+            size_stability.stable,
+        )
         if table_z is None:
             msg.rejection_reason = "TABLE_NOT_OBSERVED"
             msg.stable = False
@@ -393,7 +416,9 @@ class DetectorNode(Node):
             self.cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, points_base.tolist()))
         return msg
 
-    def _make_detection(self, image_msg, instance, box, track_id, valid_ratio, stability):
+    def _make_detection(
+        self, image_msg, instance, box, track_id, valid_ratio, stability, size_stable
+    ):
         msg = DetectedObject()
         msg.header.stamp = image_msg.header.stamp
         msg.header.frame_id = self.get_parameter("base_frame").value
@@ -413,7 +438,7 @@ class DetectorNode(Node):
         # Object-pose X is the 40 mm grasping edge; keep dimensions in that frame.
         msg.size.x, msg.size.y, msg.size.z = box.size[1], box.size[0], box.size[2]
         msg.depth_valid_ratio = float(valid_ratio)
-        msg.stable = bool(stability.stable)
+        msg.stable = bool(stability.stable and size_stable)
         return msg
 
     @staticmethod

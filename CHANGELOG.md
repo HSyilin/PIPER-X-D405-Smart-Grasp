@@ -18,6 +18,11 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Added per-track median size filtering, size outlier rejection, and a size-span
+  stability gate so borderline RGB-D measurements do not alternate between valid
+  and `SIZE_MISMATCH` on consecutive frames.
+- Parameterized exact-time TF lookup timeout and set the VMware test-box profile
+  to 250 ms to tolerate scheduling delay without falling back to latest TF.
 - Added an opt-in `106.5 x 76.5 x 30 mm` test-box profile and made the point-cloud
   outlier radius configurable, preventing the previous 30 mm radius from clipping
   large-object dimensions. The default target profile remains unchanged.

@@ -149,6 +149,8 @@ during a real action.
 - 完整 RGB-D 模式会读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
   转换到 `base_link` 后通过 PCA/OBB 自动计算物体长、宽、高，并写入
   `/smart_grasp/detections.size`；调试图会显示毫米尺寸。
+- 位姿和三轴尺寸分别经过每个 `track_id` 的多帧窗口；尺寸匹配使用窗口中值，
+  位置、水平角或尺寸极差超限时保持 `stable=false`。
 - `camera_only.launch.py` 没有深度和机械臂 TF，因此只能显示二维检测框和角度，
   不会产生可信的实际长宽高，也不会把像素面积当作物理面积。
 

@@ -33,7 +33,7 @@ RealSense D405
                          v
 smart_grasp_detector -----------------------------------------------+
   HSV / YOLO-Seg -> Instance Mask -> 深度点云 -> 平面/PCA/OBB      |
-  -> 尺寸校验 -> TF(base_link) -> 10帧稳定 -> 抓取候选             |
+  -> 尺寸中值/校验 -> TF(base_link) -> 多帧稳定 -> 抓取候选         |
                          |                                          |
                          +--> detections / cloud / poses / debug     |
                                                                     v
@@ -93,7 +93,7 @@ source ~/grasp_ws/install/setup.bash
 | `detection_backends.py` | `DetectionBackend`、`HsvBackend`、`YoloSegBackend` 和统一 `InstanceMask` |
 | `detector_node.py` | 图像同步、TF 查询、3D 定位、跟踪、评分及所有调试话题 |
 | `depth_geometry.py` | 深度单位、反投影、点云变换、桌面 RANSAC、PCA/OBB 和抓取姿态 |
-| `stability.py` | 10 帧稳定窗口及多观察姿态极差计算 |
+| `stability.py` | 位姿/尺寸多帧中值、离群剔除、极差计算及外参验证统计 |
 | `handeye_tf_node.py` | 发布 `base_link -> tcp_link -> camera_link`，避免光学帧双父节点 |
 | `tf_validator_node.py` | 手动记录 5-8 个观察姿态并判断外参稳定性门槛 |
 | `grasp_executor_node.py` | 旧直接控制诊断工具；不在默认 launch 中，默认禁止执行 |
@@ -144,7 +144,8 @@ size_tolerance: 0.012
 4. 使用 CameraInfo 反投影，在图像时间戳查询 `base_link` TF。
 5. 目标周围背景估计水平桌面，目标点云经离群过滤和 PCA 得到 OBB。
 6. 三轴尺寸必须匹配 60x40x40 mm，各轴容差 12 mm。
-7. 10 帧窗口内位置极差不超过 15 mm、水平角极差不超过 5 度才稳定。
+7. 默认10帧窗口（测试盒15帧）分别检查位置、水平角和三轴尺寸；尺寸使用中值，
+   位置极差不超过15 mm、水平角极差不超过5度、尺寸极差不超过15 mm才稳定。
 8. 多个有效目标前两名评分差小于 0.10 时拒绝抓取。
 
 YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点启动失败，
@@ -154,7 +155,8 @@ YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点
 
 测试盒使用独立配置，不覆盖默认的 `60 x 40 x 40 mm` 目标。其点云离群半径
 为 80 mm，避免默认 30 mm 半径裁掉大盒子外围；夹爪固定张开 90 mm、闭合
-目标 0 mm、力 0.5。桌面和标定门仍保持无效，不能直接执行真机抓取。
+目标 0 mm、力 0.5。尺寸使用15帧中值和15 mm极差门，图像时间TF最多等待
+250 ms。桌面和标定门仍保持无效，不能直接执行真机抓取。
 
 ```bash
 TEST_CONFIG=$HOME/grasp_ws/install/smart_grasp_bringup/share/smart_grasp_bringup/config

@@ -20,14 +20,18 @@ smart_grasp_detector:
     min_depth_valid_ratio: 0.60
     # The box corner is about 66 mm from its center; 30 mm clips its perimeter.
     point_outlier_radius: 0.080
+    # VMware scheduling can deliver image callbacks before the exact-time TF arrives.
+    tf_lookup_timeout: 0.25
     expected_size: [0.1065, 0.0765, 0.0300]
     size_tolerance: 0.012
     table_height: -999.0
     table_ransac_threshold: 0.004
-    stability_frames: 10
+    stability_frames: 15
     position_outlier_radius: 0.020
     max_position_span: 0.015
     max_yaw_span_deg: 5.0
+    size_outlier_tolerance: 0.015
+    max_size_span: 0.015
     ambiguity_score_gap: 0.10
     grasp_depth: 0.020
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
