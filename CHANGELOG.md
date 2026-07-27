@@ -18,6 +18,11 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Added an opt-in `106.5 x 76.5 x 30 mm` test-box profile and made the point-cloud
+  outlier radius configurable, preventing the previous 30 mm radius from clipping
+  large-object dimensions. The default target profile remains unchanged.
+- Added a matching fixed gripper test profile: 90 mm open, 0 mm close command,
+  0.5 effort, and 68.5-84.5 mm accepted contact width. Execution stays disabled.
 - Fixed `param_tuner` double initialization, parameter enumeration, typed array
   assignment, missing-parameter handling, and temporary-node cleanup.
 - Added regression coverage for ROS parameter array conversion and display.

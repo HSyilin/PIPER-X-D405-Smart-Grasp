@@ -14,12 +14,13 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     share = get_package_share_directory("smart_grasp_bringup")
-    perception_config = os.path.join(share, "config", "perception.yaml")
+    default_perception_config = os.path.join(share, "config", "perception.yaml")
 
     use_camera = LaunchConfiguration("use_camera")
     detector_backend = LaunchConfiguration("detector_backend")
     yolo_model = LaunchConfiguration("yolo_model")
     open_gui = LaunchConfiguration("open_gui")
+    perception_config = LaunchConfiguration("perception_config")
 
     camera_launch = GroupAction(
         scoped=True,
@@ -50,6 +51,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "detector_backend", default_value="hsv", choices=["hsv", "yolo_seg"]),
         DeclareLaunchArgument("yolo_model", default_value=""),
+        DeclareLaunchArgument(
+            "perception_config", default_value=default_perception_config),
         DeclareLaunchArgument("open_gui", default_value="false"),
         camera_launch,
         Node(

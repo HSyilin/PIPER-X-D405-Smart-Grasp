@@ -15,8 +15,8 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     share = get_package_share_directory("smart_grasp_bringup")
-    perception_config = os.path.join(share, "config", "perception.yaml")
-    grasp_config = os.path.join(share, "config", "grasp.yaml")
+    default_perception_config = os.path.join(share, "config", "perception.yaml")
+    default_grasp_config = os.path.join(share, "config", "grasp.yaml")
     calibration = os.path.join(share, "config", "handeye_20260725.yaml")
     moveit_share = get_package_share_directory("agx_arm_moveit")
     with open(os.path.join(moveit_share, "config", "kinematics.yaml"),
@@ -34,6 +34,8 @@ def generate_launch_description():
     calibration_validated = LaunchConfiguration("calibration_validated")
     detector_backend = LaunchConfiguration("detector_backend")
     yolo_model = LaunchConfiguration("yolo_model")
+    perception_config = LaunchConfiguration("perception_config")
+    grasp_config = LaunchConfiguration("grasp_config")
 
     driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -96,6 +98,9 @@ def generate_launch_description():
         DeclareLaunchArgument("detector_backend", default_value="hsv",
                               choices=["hsv", "yolo_seg"]),
         DeclareLaunchArgument("yolo_model", default_value=""),
+        DeclareLaunchArgument(
+            "perception_config", default_value=default_perception_config),
+        DeclareLaunchArgument("grasp_config", default_value=default_grasp_config),
         DeclareLaunchArgument("execute", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("calibration_validated", default_value="false",
                               choices=["true", "false"]),

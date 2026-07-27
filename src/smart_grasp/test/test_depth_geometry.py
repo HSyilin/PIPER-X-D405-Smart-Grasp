@@ -5,6 +5,7 @@ from smart_grasp.depth_geometry import (
     estimate_oriented_box,
     make_grasp_candidates,
     masked_points,
+    robust_filter,
     size_matches,
 )
 
@@ -32,3 +33,18 @@ def test_obb_size_and_grasp_candidates():
     candidates = make_grasp_candidates(box, 0.020, [0.0, 0.0, 0.1425])
     assert len(candidates) == 2
     assert all(position[2] > box.top_z for position, _ in candidates)
+
+
+def test_outlier_radius_does_not_clip_large_configured_target():
+    rng = np.random.default_rng(8)
+    points = np.column_stack((
+        rng.uniform(-0.05325, 0.05325, 4000),
+        rng.uniform(-0.03825, 0.03825, 4000),
+        rng.uniform(0.028, 0.030, 4000),
+    ))
+    clipped = robust_filter(points, radius=0.030)
+    preserved = robust_filter(points, radius=0.080)
+
+    assert np.ptp(clipped[:, 0]) < 0.070
+    assert np.ptp(preserved[:, 0]) > 0.100
+    assert np.ptp(preserved[:, 1]) > 0.070

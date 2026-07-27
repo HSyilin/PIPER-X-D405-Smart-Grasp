@@ -120,6 +120,7 @@ class DetectorNode(Node):
             "mask_erode_pixels": 3,
             "min_depth_points": 500,
             "min_depth_valid_ratio": 0.60,
+            "point_outlier_radius": 0.030,
             "expected_size": [0.060, 0.040, 0.040],
             "size_tolerance": 0.012,
             "table_height": -999.0,
@@ -335,7 +336,10 @@ class DetectorNode(Node):
             points_camera) < self.get_parameter("min_depth_points").value:
             self._invalid_detection(image_msg, instance, "INVALID_DEPTH", valid_ratio)
             return None
-        points_base = robust_filter(transform_points(points_camera, base_from_camera))
+        points_base = robust_filter(
+            transform_points(points_camera, base_from_camera),
+            self.get_parameter("point_outlier_radius").value,
+        )
         if len(points_base) < self.get_parameter("min_depth_points").value:
             self._invalid_detection(image_msg, instance, "INVALID_DEPTH", valid_ratio)
             return None

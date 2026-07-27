@@ -1,12 +1,12 @@
 smart_grasp_detector:
   ros__parameters:
-    # true is a 2-D diagnostic mode: color + detector only, without depth or TF.
+    # Temporary measured blue test box: 106.5 x 76.5 x 30.0 mm.
     camera_only: false
     detector_backend: hsv
     target_class: blue_block
-    hsv_lower: [90, 80, 50]
-    hsv_upper: [135, 255, 255]
-    min_contour_area: 500.0
+    hsv_lower: [95, 110, 70]
+    hsv_upper: [130, 255, 255]
+    min_contour_area: 800.0
     min_solidity: 0.85
     min_rectangularity: 0.65
     yolo_model: ""
@@ -18,10 +18,10 @@ smart_grasp_detector:
     mask_erode_pixels: 3
     min_depth_points: 500
     min_depth_valid_ratio: 0.60
-    point_outlier_radius: 0.030
-    expected_size: [0.060, 0.040, 0.040]
+    # The box corner is about 66 mm from its center; 30 mm clips its perimeter.
+    point_outlier_radius: 0.080
+    expected_size: [0.1065, 0.0765, 0.0300]
     size_tolerance: 0.012
-    # -999 means unknown. Fill the measured table top Z in base_link before execution.
     table_height: -999.0
     table_ransac_threshold: 0.004
     stability_frames: 10
