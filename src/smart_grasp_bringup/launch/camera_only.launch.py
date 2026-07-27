@@ -21,10 +21,12 @@ def generate_launch_description():
     yolo_model = LaunchConfiguration("yolo_model")
     open_gui = LaunchConfiguration("open_gui")
     perception_config = LaunchConfiguration("perception_config")
+    color_profile = LaunchConfiguration("color_profile")
 
     camera_launch = GroupAction(
         scoped=True,
         forwarding=False,
+        launch_configurations={"color_profile": color_profile},
         condition=IfCondition(use_camera),
         actions=[
             IncludeLaunchDescription(
@@ -38,9 +40,8 @@ def generate_launch_description():
                     "enable_color": "true",
                     "enable_depth": "false",
                     "pointcloud.enable": "false",
-                    # VMware USB/DDS transport sustains 30 FPS at this profile.
-                    "rgb_camera.color_profile": "424x240x30",
-                    "depth_module.color_profile": "424x240x30",
+                    "rgb_camera.color_profile": LaunchConfiguration("color_profile"),
+                    "depth_module.color_profile": LaunchConfiguration("color_profile"),
                 }.items(),
             )
         ],
@@ -53,6 +54,11 @@ def generate_launch_description():
         DeclareLaunchArgument("yolo_model", default_value=""),
         DeclareLaunchArgument(
             "perception_config", default_value=default_perception_config),
+        DeclareLaunchArgument(
+            "color_profile",
+            default_value="640x480x30",
+            description="D405 color stream profile: WIDTHxHEIGHTxFPS",
+        ),
         DeclareLaunchArgument("open_gui", default_value="false"),
         camera_launch,
         Node(

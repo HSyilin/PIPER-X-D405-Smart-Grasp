@@ -97,6 +97,9 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
 本次“只做颜色识别、删除视觉尺寸匹配”实现提交：
 `9d32c83f53fdaf43f2fe2292801ca5e14444bb91`。
 
+- 纯相机模式默认分辨率由 `424x240x30` 提升到 `640x480x30`，并增加
+  `color_profile` 启动参数；虚拟机USB不稳定时可临时降级而无需修改源码。
+
 - 经项目所有者明确批准，已删除视觉物理尺寸计算、尺寸匹配、尺寸稳定窗口和
   `SIZE_MISMATCH` 结果；HSV 是目标身份判断，深度仅提供中心和水平朝向。
 - `fixed_object_size` 只向 PlanningScene 和抓取几何提供固定配置，不参与检测

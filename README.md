@@ -286,11 +286,17 @@ ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
 
 机械臂尚未接入，或只需调试颜色识别时，使用独立二维相机调试模式。该模式
 不启动驱动、深度、手眼 TF、MoveIt 或抓取服务器，只验证彩色图和
-HSV/YOLO-Seg Mask。针对当前 VMware USB 转发环境，该模式使用实测可稳定达到
-30 FPS 的 `424x240x30`；完整 RGB-D 抓取仍使用 `640x480x30`：
+HSV/YOLO-Seg Mask。该模式默认使用 `640x480x30` 提高清晰度：
 
 ```bash
 ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=true
+```
+
+若 VMware USB 转发出现持续掉线或帧率不足，可在不改源码的情况下临时降级：
+
+```bash
+ros2 launch smart_grasp_bringup camera_only.launch.py \
+  color_profile:=424x240x30 open_gui:=true
 ```
 
 也可以不自动打开 GUI，再单独查看调试话题：

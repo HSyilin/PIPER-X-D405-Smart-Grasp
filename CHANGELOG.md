@@ -8,6 +8,8 @@ cannot be reconstructed exactly from this repository.
 
 ### Changed
 
+- Raised the camera-only default color profile from `424x240x30` to
+  `640x480x30` and exposed `color_profile` as a launch argument.
 - At the project owner's direction, removed visual physical-size estimation,
   size matching, size stability, and the `SIZE_MISMATCH` action result. HSV is
   now the only identity gate; aligned depth remains only for 3-D position/yaw.
@@ -38,8 +40,6 @@ cannot be reconstructed exactly from this repository.
 - Added an opt-in camera-only launch and detector path for smooth 2-D HSV/YOLO
   diagnostics before the robot and hand-eye TF chain are connected. Production
   RGB-D/TF behavior remains unchanged by default.
-- Set the VMware camera-only stream to the measured-stable `424x240x30` profile;
-  the production RGB-D pipeline remains at `640x480x30`.
 - Made detector and hand-eye node shutdown idempotent so `Ctrl+C` no longer emits
   `rcl_shutdown already called` or leaves launch waiting for forced termination.
 - Run the detector with a two-thread executor so exact image-time TF lookups do not

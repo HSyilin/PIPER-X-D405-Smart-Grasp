@@ -58,7 +58,8 @@ ros2 launch smart_grasp_bringup smart_grasp_system.launch.py
 2-D perception without starting the arm/MoveIt or requiring depth/TF:
 
 ```bash
-ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=false
+ros2 launch smart_grasp_bringup camera_only.launch.py \
+  color_profile:=640x480x30 open_gui:=false
 ```
 
 This camera-only mode publishes HSV/YOLO masks, pixel bounding boxes, and debug
