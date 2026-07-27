@@ -5,6 +5,7 @@ from smart_grasp.depth_geometry import (
     estimate_oriented_box,
     make_grasp_candidates,
     masked_points,
+    reported_object_size,
     robust_filter,
     size_matches,
 )
@@ -48,3 +49,15 @@ def test_outlier_radius_does_not_clip_large_configured_target():
     assert np.ptp(clipped[:, 0]) < 0.070
     assert np.ptp(preserved[:, 0]) > 0.100
     assert np.ptp(preserved[:, 1]) > 0.070
+
+
+def test_fixed_size_mode_reports_configured_dimensions():
+    measured = [0.073, 0.103, 0.032]
+    configured = [0.1065, 0.0765, 0.0300]
+
+    assert np.allclose(
+        reported_object_size(measured, configured, False), configured
+    )
+    assert np.allclose(
+        reported_object_size(measured, configured, True), measured
+    )

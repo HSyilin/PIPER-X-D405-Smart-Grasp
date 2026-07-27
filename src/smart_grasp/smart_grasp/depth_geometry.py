@@ -1,7 +1,7 @@
 """Depth conversion, robust 3-D geometry, and grasp-pose helpers."""
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -126,6 +126,15 @@ def size_matches(measured: Sequence[float], expected: Sequence[float], tolerance
     return bool(
         np.all(np.abs(np.sort(np.asarray(measured)) - np.sort(np.asarray(expected))) <= tolerance)
     )
+
+
+def reported_object_size(measured, configured, validation_enabled):
+    """Choose measured dimensions or a configured fixed target profile."""
+    selected = measured if validation_enabled else configured
+    size = np.asarray(selected, dtype=float)
+    if size.shape != (3,) or np.any(size <= 0.0):
+        raise ValueError("object size must contain three positive dimensions")
+    return size.copy()
 
 
 def matrix_from_transform(translation, quaternion):

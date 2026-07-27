@@ -155,8 +155,10 @@ YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点
 
 测试盒使用独立配置，不覆盖默认的 `60 x 40 x 40 mm` 目标。其点云离群半径
 为 80 mm，避免默认 30 mm 半径裁掉大盒子外围；夹爪固定张开 90 mm、闭合
-目标 0 mm、力 0.5。尺寸使用15帧中值和15 mm极差门，图像时间TF最多等待
-250 ms。桌面和标定门仍保持无效，不能直接执行真机抓取。
+目标 0 mm、力 0.5，图像时间TF最多等待250 ms。当前测试配置关闭视觉尺寸门，
+`DetectedObject.size` 固定发布实测
+`76.5 x 106.5 x 30 mm`，但仍使用深度计算中心和方向。桌面和标定门仍保持
+无效，不能直接执行真机抓取。
 
 ```bash
 TEST_CONFIG=$HOME/grasp_ws/install/smart_grasp_bringup/share/smart_grasp_bringup/config

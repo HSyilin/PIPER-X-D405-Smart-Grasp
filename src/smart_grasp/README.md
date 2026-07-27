@@ -151,6 +151,8 @@ during a real action.
   `/smart_grasp/detections.size`；调试图会显示毫米尺寸。
 - 位姿和三轴尺寸分别经过每个 `track_id` 的多帧窗口；尺寸匹配使用窗口中值，
   位置、水平角或尺寸极差超限时保持 `stable=false`。
+- `enable_size_validation=false` 仅用于已实测目标的临时联调：消息尺寸改用
+  `expected_size` 固定值，跳过 `SIZE_MISMATCH`，但深度、TF和位姿稳定门不变。
 - `camera_only.launch.py` 没有深度和机械臂 TF，因此只能显示二维检测框和角度，
   不会产生可信的实际长宽高，也不会把像素面积当作物理面积。
 

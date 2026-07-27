@@ -14,6 +14,7 @@ smart_grasp_detector:
     min_depth_valid_ratio: 0.60
     point_outlier_radius: 0.030
     tf_lookup_timeout: 0.10
+    enable_size_validation: true
     expected_size: [0.060, 0.040, 0.040]
     size_tolerance: 0.012
     size_outlier_tolerance: 0.012

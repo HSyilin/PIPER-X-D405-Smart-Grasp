@@ -18,6 +18,9 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Added an opt-in fixed-size perception mode for the measured test box. It bypasses
+  visual size rejection and publishes the configured dimensions while retaining
+  depth-derived position/orientation, TF checks, pose stability, and execution gates.
 - Added per-track median size filtering, size outlier rejection, and a size-span
   stability gate so borderline RGB-D measurements do not alternate between valid
   and `SIZE_MISMATCH` on consecutive frames.

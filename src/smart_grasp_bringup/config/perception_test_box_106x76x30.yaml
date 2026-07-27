@@ -22,6 +22,8 @@ smart_grasp_detector:
     point_outlier_radius: 0.080
     # VMware scheduling can deliver image callbacks before the exact-time TF arrives.
     tf_lookup_timeout: 0.25
+    # Temporary test mode: publish the measured profile instead of gating on OBB size.
+    enable_size_validation: false
     expected_size: [0.1065, 0.0765, 0.0300]
     size_tolerance: 0.012
     table_height: -999.0

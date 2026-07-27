@@ -28,6 +28,7 @@ from smart_grasp.depth_geometry import (
     masked_points,
     matrix_from_transform,
     quaternion_from_axes,
+    reported_object_size,
     robust_filter,
     size_matches,
     transform_points,
@@ -122,6 +123,7 @@ class DetectorNode(Node):
             "min_depth_valid_ratio": 0.60,
             "point_outlier_radius": 0.030,
             "tf_lookup_timeout": 0.10,
+            "enable_size_validation": True,
             "expected_size": [0.060, 0.040, 0.040],
             "size_tolerance": 0.012,
             "table_height": -999.0,
@@ -386,11 +388,25 @@ class DetectorNode(Node):
             self.get_parameter("max_position_span").value,
             math.radians(self.get_parameter("max_yaw_span_deg").value),
         )
-        size_window.add(box.size)
-        size_stability = size_window.result(
-            self.get_parameter("max_size_span").value
+        size_validation_enabled = bool(
+            self.get_parameter("enable_size_validation").value
         )
-        box.size = size_stability.median_size
+        if size_validation_enabled:
+            size_window.add(box.size)
+            size_stability = size_window.result(
+                self.get_parameter("max_size_span").value
+            )
+            box.size = size_stability.median_size
+            size_stable = size_stability.stable
+        else:
+            # Fixed-size mode keeps depth-derived center/orientation, but reports
+            # the measured target profile to collision and grasp consumers.
+            box.size = reported_object_size(
+                box.size,
+                self.get_parameter("expected_size").value,
+                validation_enabled=False,
+            )
+            size_stable = True
         msg = self._make_detection(
             image_msg,
             instance,
@@ -398,12 +414,12 @@ class DetectorNode(Node):
             track_id,
             valid_ratio,
             stability,
-            size_stability.stable,
+            size_stable,
         )
         if table_z is None:
             msg.rejection_reason = "TABLE_NOT_OBSERVED"
             msg.stable = False
-        elif not size_matches(
+        elif size_validation_enabled and not size_matches(
             box.size,
             self.get_parameter("expected_size").value,
             self.get_parameter("size_tolerance").value,
