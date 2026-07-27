@@ -11,6 +11,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseArray, PoseStamped
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
@@ -482,11 +483,15 @@ class DetectorNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = DetectorNode()
+    # Image callbacks may wait for a transform newer than the latest buffered one.
+    # Keep TF subscriptions running while that exact-time lookup is pending.
+    executor = MultiThreadedExecutor(num_threads=2)
     try:
-        rclpy.spin(node)
+        rclpy.spin(node, executor=executor)
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown(timeout_sec=1.0)
         try:
             rclpy.try_shutdown()
         except KeyboardInterrupt:

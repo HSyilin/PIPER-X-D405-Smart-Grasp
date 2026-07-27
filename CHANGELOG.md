@@ -20,6 +20,8 @@ cannot be reconstructed exactly from this repository.
   the production RGB-D pipeline remains at `640x480x30`.
 - Made detector and hand-eye node shutdown idempotent so `Ctrl+C` no longer emits
   `rcl_shutdown already called` or leaves launch waiting for forced termination.
+- Run the detector with a two-thread executor so exact image-time TF lookups do not
+  block the same executor thread that must receive the corresponding `/tf` update.
 
 ## 0.2.0 - 2026-07-26
 
