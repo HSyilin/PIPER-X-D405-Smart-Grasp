@@ -94,6 +94,9 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
 
 ## 未发布修复记录（2026-07-27）
 
+本次“只做颜色识别、删除视觉尺寸匹配”实现提交：
+`9d32c83f53fdaf43f2fe2292801ca5e14444bb91`。
+
 - 经项目所有者明确批准，已删除视觉物理尺寸计算、尺寸匹配、尺寸稳定窗口和
   `SIZE_MISMATCH` 结果；HSV 是目标身份判断，深度仅提供中心和水平朝向。
 - `fixed_object_size` 只向 PlanningScene 和抓取几何提供固定配置，不参与检测
