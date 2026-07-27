@@ -19,7 +19,7 @@ explicit `grasp_executor_node` diagnostic executable. No default launch starts i
 |---|---|---|
 | 接口 `smart_grasp_interfaces` | ✅ 完成 | `DetectedObject.msg` + `PickObject.action`，已编译 |
 | 感知 `smart_grasp` | ✅ 已实现 | HSV / YOLO-Seg 统一后端；ArUco 仅为独立诊断脚本 |
-| 深度/抓取几何 | ✅ 完成 | `depth_geometry` 反投影 + `grasp_geometry` 质心/尺寸→TCP 抓取姿态 |
+| 深度/抓取几何 | ✅ 完成 | `depth_geometry` 反投影/PCA 位姿 + 预设目标几何→TCP 抓取姿态 |
 | 手眼 / 校验 | ✅ 已实现 | 发布动态 `base_link -> tcp_link` 和静态相机外参；通过 `/smart_grasp/validation/record`、`reset` 采样校验 |
 | MoveIt 执行 `smart_grasp_moveit` | ✅ 已实现 | C++ `pick_server` 实现从检测、规划、接近、夹持到抬升的完整防护状态机 |
 | 编排/配置 `smart_grasp_bringup` | ✅ 完成 | `smart_grasp_system.launch.py` 统一编排 + 校验门控 |
@@ -62,8 +62,7 @@ ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=false
 ```
 
 This camera-only mode publishes HSV/YOLO masks, pixel bounding boxes, and debug
-images. Full metric dimensions require aligned depth and a valid timestamped
-`camera_color_optical_frame -> base_link` transform.
+images. It does not require aligned depth or a robot TF.
 
 Run a plan-only pick after a stable detection is visible:
 
@@ -86,7 +85,7 @@ ros2 action send_goal /smart_grasp/pick \
 
 Both the action goal (`execute: true`) and the server arming parameter must be
 true. Missing table measurements, an unvalidated calibration, stale TF/depth,
-unstable size, trajectory start mismatch, wrist jump, or gripper fault aborts the
+unstable pose, trajectory start mismatch, wrist jump, or gripper fault aborts the
 state machine before the following command is sent.
 
 After all validation gates pass, arm the launch and then enable the hardware:
@@ -142,17 +141,16 @@ during a real action.
   浏览器开 `http://localhost:8080/stream_viewer?topic=/smart_grasp/debug_image`
   （SSH 用 `ssh -L 8080:localhost:8080` 转发端口）。
 
-### HSV 会计算哪些数据
+### HSV 和深度会计算哪些数据
 
 - HSV 后端自动计算每个蓝色轮廓的像素面积、凸度、矩形度、二维外接矩形和
   图像内角度。这些数据用于二维筛选，单位是像素，不是物体的实际毫米尺寸。
-- 完整 RGB-D 模式会读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
-  转换到 `base_link` 后通过 PCA/OBB 自动计算物体长、宽、高，并写入
-  `/smart_grasp/detections.size`；调试图会显示毫米尺寸。
-- 位姿和三轴尺寸分别经过每个 `track_id` 的多帧窗口；尺寸匹配使用窗口中值，
-  位置、水平角或尺寸极差超限时保持 `stable=false`。
-- `enable_size_validation=false` 仅用于已实测目标的临时联调：消息尺寸改用
-  `expected_size` 固定值，跳过 `SIZE_MISMATCH`，但深度、TF和位姿稳定门不变。
+- 完整 RGB-D 模式读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
+  转换到 `base_link` 后通过 PCA 计算目标中心和水平朝向。
+- 不测量、不匹配物体长宽高，也没有 `SIZE_MISMATCH`。每个 `track_id` 的多帧
+  窗口只检查位置和水平角。
+- `/smart_grasp/detections.size` 来自 `fixed_object_size` 配置，仅供碰撞盒和抓取
+  几何使用，不参与颜色目标是否通过的判断。
 - `camera_only.launch.py` 没有深度和机械臂 TF，因此只能显示二维检测框和角度，
   不会产生可信的实际长宽高，也不会把像素面积当作物理面积。
 
@@ -179,7 +177,7 @@ during a real action.
 ### 目标 / 场景配置
 
 - action goal 中的 `target_class`（如 `blue_block`）只负责选择检测类别。
-- HSV、目标期望尺寸和容差由 `config/perception.yaml` 提供，抓取和场景参数由
+- HSV 和预设目标几何由 `config/perception.yaml` 提供，抓取和场景参数由
   `config/grasp.yaml` 提供。
 - `config/target_blue_block.yaml` 当前保留为版本化目标配置参考，尚未接入 launch；
   不应把它误认为 action goal 的替代品，也不在未确认配置归属时删除。

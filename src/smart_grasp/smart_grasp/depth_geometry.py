@@ -1,7 +1,7 @@
 """Depth conversion, robust 3-D geometry, and grasp-pose helpers."""
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Optional
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -87,9 +87,15 @@ def fit_horizontal_plane_z(points: np.ndarray, threshold=0.004, iterations=80):
     return float(np.median(best[:, 2]))
 
 
-def estimate_oriented_box(points: np.ndarray, table_z: Optional[float] = None):
+def estimate_oriented_box(
+    points: np.ndarray, fixed_size, table_z: Optional[float] = None
+):
+    """Estimate target pose while taking all object dimensions from configuration."""
     if len(points) < 10:
         raise ValueError("not enough points for OBB")
+    size = np.asarray(fixed_size, dtype=float)
+    if size.shape != (3,) or np.any(size <= 0.0):
+        raise ValueError("fixed object size must contain three positive dimensions")
     xy = points[:, :2]
     center_xy = np.median(xy, axis=0)
     covariance = np.cov(xy - center_xy, rowvar=False)
@@ -101,40 +107,19 @@ def estimate_oriented_box(points: np.ndarray, table_z: Optional[float] = None):
         short_axis = -short_axis
     if np.linalg.det(np.column_stack((short_axis, long_axis))) < 0.0:
         long_axis = -long_axis
-    short_extent = np.percentile(xy @ short_axis, [2.0, 98.0])
-    long_extent = np.percentile(xy @ long_axis, [2.0, 98.0])
     top_z = float(np.percentile(points[:, 2], 95.0))
-    bottom_z = float(table_z) if table_z is not None else float(np.percentile(points[:, 2], 2.0))
-    height = max(0.0, top_z - bottom_z)
-    size = np.array(
-        [long_extent[1] - long_extent[0], short_extent[1] - short_extent[0], height]
-    )
+    bottom_z = float(table_z) if table_z is not None else top_z - float(size[2])
     center = np.array([center_xy[0], center_xy[1], 0.5 * (top_z + bottom_z)])
     yaw = float(np.arctan2(short_axis[1], short_axis[0]))
     return OrientedBox(
         center=center,
-        size=size,
+        size=size.copy(),
         short_axis=np.array([short_axis[0], short_axis[1], 0.0]),
         long_axis=np.array([long_axis[0], long_axis[1], 0.0]),
         yaw=yaw,
         top_z=top_z,
         table_z=table_z,
     )
-
-
-def size_matches(measured: Sequence[float], expected: Sequence[float], tolerance: float):
-    return bool(
-        np.all(np.abs(np.sort(np.asarray(measured)) - np.sort(np.asarray(expected))) <= tolerance)
-    )
-
-
-def reported_object_size(measured, configured, validation_enabled):
-    """Choose measured dimensions or a configured fixed target profile."""
-    selected = measured if validation_enabled else configured
-    size = np.asarray(selected, dtype=float)
-    if size.shape != (3,) or np.any(size <= 0.0):
-        raise ValueError("object size must contain three positive dimensions")
-    return size.copy()
 
 
 def matrix_from_transform(translation, quaternion):

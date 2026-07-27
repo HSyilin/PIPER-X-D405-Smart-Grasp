@@ -12,7 +12,7 @@
 当前范围：
 
 - 固定机械臂基座、固定桌面、单个或少量静止目标。
-- HSV 识别蓝色目标，D405 对齐深度负责三维定位和尺寸验证。
+- HSV 识别蓝色目标，D405 对齐深度只负责三维位置和水平朝向定位。
 - 顶部两指抓取，抓起后沿 `base_link +Z` 抬升 50 mm 并保持。
 - MoveIt 2、KDL 和 OMPL RRTConnect 负责规划。
 - 支持只规划、取消、安全失败和低速分级调试。
@@ -32,8 +32,8 @@ RealSense D405
                          |
                          v
 smart_grasp_detector -----------------------------------------------+
-  HSV / YOLO-Seg -> Instance Mask -> 深度点云 -> 平面/PCA/OBB      |
-  -> 尺寸中值/校验 -> TF(base_link) -> 多帧稳定 -> 抓取候选         |
+  HSV / YOLO-Seg -> Instance Mask -> 深度点云 -> 平面/PCA          |
+  -> TF(base_link) -> 位姿多帧稳定 -> 固定几何抓取候选              |
                          |                                          |
                          +--> detections / cloud / poses / debug     |
                                                                     v
@@ -84,7 +84,7 @@ source ~/grasp_ws/install/setup.bash
 | `smart_grasp_moveit` | C++ 抓取动作服务器 | 目标选择、候选生成、MoveIt 规划、PlanningScene、夹爪控制、安全状态机 |
 | `smart_grasp_bringup` | 运行配置和统一启动 | launch、感知/抓取/外参/目标配置、模型目录、RViz 说明 |
 | `agx_arm_ws/.../agx_arm_moveit` | 下层 MoveIt 集成 | 显式 OMPL RRTConnect、控制门同时监听机械臂和夹爪 |
-| `test/` | 纯算法回归测试 | HSV、深度单位、投影、OBB、抓取几何、稳定性、TF 极差 |
+| `test/` | 纯算法回归测试 | HSV、深度单位、投影、固定抓取几何、位姿稳定性、TF 极差 |
 
 `smart_grasp` 内部模块：
 
@@ -92,8 +92,8 @@ source ~/grasp_ws/install/setup.bash
 |---|---|
 | `detection_backends.py` | `DetectionBackend`、`HsvBackend`、`YoloSegBackend` 和统一 `InstanceMask` |
 | `detector_node.py` | 图像同步、TF 查询、3D 定位、跟踪、评分及所有调试话题 |
-| `depth_geometry.py` | 深度单位、反投影、点云变换、桌面 RANSAC、PCA/OBB 和抓取姿态 |
-| `stability.py` | 位姿/尺寸多帧中值、离群剔除、极差计算及外参验证统计 |
+| `depth_geometry.py` | 深度单位、反投影、点云变换、桌面 RANSAC、PCA 位姿和固定几何抓取姿态 |
+| `stability.py` | 位姿多帧离群剔除、极差计算及外参验证统计 |
 | `handeye_tf_node.py` | 发布 `base_link -> tcp_link -> camera_link`，避免光学帧双父节点 |
 | `tf_validator_node.py` | 手动记录 5-8 个观察姿态并判断外参稳定性门槛 |
 | `grasp_executor_node.py` | 旧直接控制诊断工具；不在默认 launch 中，默认禁止执行 |
@@ -104,12 +104,12 @@ source ~/grasp_ws/install/setup.bash
 
 | 名称 | 类型 | 内容 |
 |---|---|---|
-| `/smart_grasp/detections` | `smart_grasp_interfaces/DetectedObject` | ID、类别、置信度、基座位姿、尺寸、深度率、稳定状态、拒绝原因 |
+| `/smart_grasp/detections` | `smart_grasp_interfaces/DetectedObject` | ID、类别、置信度、基座位姿、预设几何、深度率、稳定状态、拒绝原因 |
 | `/smart_grasp/object_cloud` | `sensor_msgs/PointCloud2` | 当前通过验证的目标点云 |
 | `/smart_grasp/object_pose` | `geometry_msgs/PoseStamped` | 最高分目标物体位姿 |
 | `/smart_grasp/grasp_candidates` | `geometry_msgs/PoseArray` | 相差 180 度的两个 TCP 候选 |
-| `/smart_grasp/debug_image` | `sensor_msgs/Image` | Mask、轮廓、尺寸、深度率、稳定状态和拒绝原因 |
-| `/smart_grasp/debug_markers` | `visualization_msgs/MarkerArray` | OBB 和抓取姿态 |
+| `/smart_grasp/debug_image` | `sensor_msgs/Image` | Mask、轮廓、深度率、稳定状态和拒绝原因 |
+| `/smart_grasp/debug_markers` | `visualization_msgs/MarkerArray` | 预设目标碰撞盒和抓取姿态 |
 
 动作和服务：
 
@@ -132,8 +132,7 @@ source ~/grasp_ws/install/setup.bash
 detector_backend: hsv
 hsv_lower: [90, 80, 50]
 hsv_upper: [135, 255, 255]
-expected_size: [0.060, 0.040, 0.040]
-size_tolerance: 0.012
+fixed_object_size: [0.060, 0.040, 0.040]
 ```
 
 处理流程固定为：
@@ -142,11 +141,11 @@ size_tolerance: 0.012
 2. 所有轮廓分别检查面积、凸度和矩形度，不直接只选最大轮廓。
 3. Mask 腐蚀后读取对齐深度，支持 `16UC1` 毫米和 `32FC1` 米。
 4. 使用 CameraInfo 反投影，在图像时间戳查询 `base_link` TF。
-5. 目标周围背景估计水平桌面，目标点云经离群过滤和 PCA 得到 OBB。
-6. 三轴尺寸必须匹配 60x40x40 mm，各轴容差 12 mm。
-7. 默认10帧窗口（测试盒15帧）分别检查位置、水平角和三轴尺寸；尺寸使用中值，
-   位置极差不超过15 mm、水平角极差不超过5度、尺寸极差不超过15 mm才稳定。
-8. 多个有效目标前两名评分差小于 0.10 时拒绝抓取。
+5. 目标周围背景估计水平桌面，目标点云经离群过滤和 PCA 得到中心与水平朝向。
+6. 不计算、不比较物体长宽高；`fixed_object_size` 只提供碰撞盒和抓取高度。
+7. 默认10帧窗口（测试盒15帧）只检查位置和水平角；位置极差不超过15 mm、
+   水平角极差不超过5度才稳定。
+8. 多个有效颜色目标前两名评分差小于 0.10 时拒绝抓取。
 
 YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点启动失败，
 不会在真机动作过程中自动回退 HSV。
@@ -154,10 +153,10 @@ YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点
 ### 106.5 x 76.5 x 30 mm 临时测试盒
 
 测试盒使用独立配置，不覆盖默认的 `60 x 40 x 40 mm` 目标。其点云离群半径
-为 80 mm，避免默认 30 mm 半径裁掉大盒子外围；夹爪固定张开 90 mm、闭合
-目标 0 mm、力 0.5，图像时间TF最多等待250 ms。当前测试配置关闭视觉尺寸门，
-`DetectedObject.size` 固定发布实测
-`76.5 x 106.5 x 30 mm`，但仍使用深度计算中心和方向。桌面和标定门仍保持
+为 80 mm，保留足够点云用于中心和方向估计；夹爪固定张开 90 mm、闭合
+目标 0 mm、力 0.5，图像时间TF最多等待250 ms。系统没有视觉尺寸门，
+`DetectedObject.size` 仅按配置发布
+`76.5 x 106.5 x 30 mm`，深度只计算中心和方向。桌面和标定门仍保持
 无效，不能直接执行真机抓取。
 
 ```bash
@@ -191,7 +190,7 @@ src/smart_grasp_bringup/config/handeye_20260725.yaml
 ## 8. MoveIt 抓取状态机
 
 ```text
-MOVE_TO_OBSERVE -> DETECT -> VALIDATE_DEPTH_AND_SIZE
+MOVE_TO_OBSERVE -> DETECT -> VALIDATE_DEPTH_AND_POSE
 -> GENERATE_CANDIDATES -> PLAN_PREGRASP -> EXEC_PREGRASP
 -> REOBSERVE -> CARTESIAN_APPROACH -> CLOSE_GRIPPER
 -> VERIFY_CONTACT -> ATTACH_OBJECT -> CARTESIAN_LIFT -> DONE
@@ -217,7 +216,7 @@ table_height: -999.0
 table_size: [0.0, 0.0, 0.0]
 ```
 
-以下任一条件都会拒绝后续动作：无目标、错误尺寸、深度不足、多目标歧义、
+以下任一条件都会拒绝后续动作：无目标、深度不足、多目标歧义、
 TF 缺失、位姿过期、外参未验证、桌面未配置、规划失败、起点不一致、腕部
 跳变、笛卡尔路径不足、夹爪故障、接触宽度异常或用户取消。
 
@@ -302,7 +301,7 @@ ros2 run rqt_image_view rqt_image_view /smart_grasp/debug_image
 ```
 
 二维模式发布的检测结果带有 `CAMERA_ONLY_2D` 拒绝原因，不能作为三维抓取
-目标。接入机械臂后应恢复 `smart_grasp_system.launch.py` 完成深度、TF 和尺寸
+目标。接入机械臂后应恢复 `smart_grasp_system.launch.py` 完成深度、TF 和位姿
 验证。
 
 不接 CAN 的 MoveIt 集成检查：
@@ -364,7 +363,7 @@ ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
   yolo_model:=$HOME/grasp_ws/src/smart_grasp_bringup/models/blue_block_seg.pt
 ```
 
-除检测后端外，深度、尺寸、TF、稳定性、抓取候选和 MoveIt 均保持不变。
+除检测后端外，深度位姿、固定目标几何、TF、稳定性、抓取候选和 MoveIt 均保持不变。
 
 ## 13. 迁移到工控机
 
@@ -422,7 +421,7 @@ git -C ~/agx_arm_ws/src/agx_arm_ros switch \
 已完成：
 
 - ROS 接口生成和四包构建。
-- HSV、深度、OBB、抓取几何、稳定性和 TF 极差共 9 项单元测试。
+- HSV、深度定位、固定抓取几何、位姿稳定性和 TF 极差已有单元测试。
 - 无 CAN 的 MoveIt 冒烟测试，确认 KDL、OMPL RRTConnect 和动作服务器加载。
 - 默认执行门禁、外参门禁、桌面门禁和控制门配置。
 

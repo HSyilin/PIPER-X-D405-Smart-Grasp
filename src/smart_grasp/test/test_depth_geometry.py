@@ -5,9 +5,7 @@ from smart_grasp.depth_geometry import (
     estimate_oriented_box,
     make_grasp_candidates,
     masked_points,
-    reported_object_size,
     robust_filter,
-    size_matches,
 )
 
 
@@ -22,15 +20,17 @@ def test_depth_units_and_projection():
     assert np.allclose(depth_to_meters(depth.astype(np.float32) / 1000, "32FC1"), 0.2)
 
 
-def test_obb_size_and_grasp_candidates():
+def test_fixed_geometry_and_grasp_candidates():
     rng = np.random.default_rng(3)
     points = np.column_stack((
-        rng.uniform(-0.02, 0.02, 3000),
-        rng.uniform(-0.03, 0.03, 3000),
+        # Deliberately disagree with the configured dimensions. The point cloud
+        # may determine pose, but it must never determine or reject target size.
+        rng.uniform(-0.04, 0.04, 3000),
+        rng.uniform(-0.055, 0.055, 3000),
         rng.uniform(0.038, 0.040, 3000),
     ))
-    box = estimate_oriented_box(points, table_z=0.0)
-    assert size_matches(box.size, [0.060, 0.040, 0.040], 0.004)
+    box = estimate_oriented_box(points, [0.060, 0.040, 0.040], table_z=0.0)
+    assert np.allclose(box.size, [0.060, 0.040, 0.040])
     candidates = make_grasp_candidates(box, 0.020, [0.0, 0.0, 0.1425])
     assert len(candidates) == 2
     assert all(position[2] > box.top_z for position, _ in candidates)
@@ -49,15 +49,3 @@ def test_outlier_radius_does_not_clip_large_configured_target():
     assert np.ptp(clipped[:, 0]) < 0.070
     assert np.ptp(preserved[:, 0]) > 0.100
     assert np.ptp(preserved[:, 1]) > 0.070
-
-
-def test_fixed_size_mode_reports_configured_dimensions():
-    measured = [0.073, 0.103, 0.032]
-    configured = [0.1065, 0.0765, 0.0300]
-
-    assert np.allclose(
-        reported_object_size(measured, configured, False), configured
-    )
-    assert np.allclose(
-        reported_object_size(measured, configured, True), measured
-    )

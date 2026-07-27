@@ -22,18 +22,14 @@ smart_grasp_detector:
     point_outlier_radius: 0.080
     # VMware scheduling can deliver image callbacks before the exact-time TF arrives.
     tf_lookup_timeout: 0.25
-    # Temporary test mode: publish the measured profile instead of gating on OBB size.
-    enable_size_validation: false
-    expected_size: [0.1065, 0.0765, 0.0300]
-    size_tolerance: 0.012
+    # Used only by collision/grasp geometry; perception never measures or matches size.
+    fixed_object_size: [0.1065, 0.0765, 0.0300]
     table_height: -999.0
     table_ransac_threshold: 0.004
     stability_frames: 15
     position_outlier_radius: 0.020
     max_position_span: 0.015
     max_yaw_span_deg: 5.0
-    size_outlier_tolerance: 0.015
-    max_size_span: 0.015
     ambiguity_score_gap: 0.10
     grasp_depth: 0.020
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]

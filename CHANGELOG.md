@@ -6,6 +6,14 @@ cannot be reconstructed exactly from this repository.
 
 ## Unreleased
 
+### Changed
+
+- At the project owner's direction, removed visual physical-size estimation,
+  size matching, size stability, and the `SIZE_MISMATCH` action result. HSV is
+  now the only identity gate; aligned depth remains only for 3-D position/yaw.
+- `fixed_object_size` supplies collision and grasp geometry without affecting
+  detection acceptance. This supersedes the earlier unreleased size-gating work.
+
 ### Documentation
 
 - Added `PROJECT_RULES.md` to make the no-upstream-push, traceability/rollback,
@@ -13,22 +21,15 @@ cannot be reconstructed exactly from this repository.
 - Corrected the package README to match the implemented HSV/YOLO backends, TF
   validation services, MoveIt state machine, RViz topics, runtime parameter
   behavior, and camera-only capability boundary.
-- Documented that HSV computes pixel contour geometry while aligned depth and
-  PCA/OBB provide metric object length, width, and height.
+- Documented that HSV pixel contour geometry is only a noise/shape filter and
+  that aligned depth/PCA no longer estimates physical dimensions.
 
 ### Fixed
 
-- Added an opt-in fixed-size perception mode for the measured test box. It bypasses
-  visual size rejection and publishes the configured dimensions while retaining
-  depth-derived position/orientation, TF checks, pose stability, and execution gates.
-- Added per-track median size filtering, size outlier rejection, and a size-span
-  stability gate so borderline RGB-D measurements do not alternate between valid
-  and `SIZE_MISMATCH` on consecutive frames.
 - Parameterized exact-time TF lookup timeout and set the VMware test-box profile
   to 250 ms to tolerate scheduling delay without falling back to latest TF.
-- Added an opt-in `106.5 x 76.5 x 30 mm` test-box profile and made the point-cloud
-  outlier radius configurable, preventing the previous 30 mm radius from clipping
-  large-object dimensions. The default target profile remains unchanged.
+- Added an opt-in `106.5 x 76.5 x 30 mm` fixed-geometry test-box profile and made
+  the point-cloud outlier radius configurable for robust center/yaw estimation.
 - Added a matching fixed gripper test profile: 90 mm open, 0 mm close command,
   0.5 effort, and 68.5-84.5 mm accepted contact width. Execution stays disabled.
 - Fixed `param_tuner` double initialization, parameter enumeration, typed array

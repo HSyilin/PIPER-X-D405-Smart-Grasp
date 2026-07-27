@@ -1,6 +1,5 @@
 target_class: blue_block
-expected_size: [0.060, 0.040, 0.040]
-size_tolerance: 0.012
+fixed_object_size: [0.060, 0.040, 0.040]
 gripper_open: 0.055
 gripper_close: 0.0
 contact_width_min: 0.032

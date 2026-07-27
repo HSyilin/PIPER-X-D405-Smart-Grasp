@@ -466,7 +466,7 @@ private:
       abort(handle, PickObject::Result::NO_TARGET, "no fresh target detection");
       return;
     }
-    feedback(handle, "VALIDATE_DEPTH_AND_SIZE", "checking rejection and stability", detections.size());
+    feedback(handle, "VALIDATE_DEPTH_AND_POSE", "checking rejection and stability", detections.size());
     auto valid = std::vector<smart_grasp_interfaces::msg::DetectedObject>();
     for (const auto & detection : detections) {
       if (detection.rejection_reason.empty() && detection.stable) {
@@ -476,7 +476,6 @@ private:
     if (valid.empty()) {
       const auto & rejected = detections.front();
       uint16_t code = PickObject::Result::UNSTABLE_TARGET;
-      if (rejected.rejection_reason == "SIZE_MISMATCH") {code = PickObject::Result::SIZE_MISMATCH;}
       if (rejected.rejection_reason == "INVALID_DEPTH" ||
         rejected.rejection_reason == "TABLE_NOT_OBSERVED") {code = PickObject::Result::INVALID_DEPTH;}
       if (rejected.rejection_reason == "TF_UNAVAILABLE") {code = PickObject::Result::TF_UNAVAILABLE;}
