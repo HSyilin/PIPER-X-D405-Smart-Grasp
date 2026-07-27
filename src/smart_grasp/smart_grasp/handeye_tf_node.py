@@ -81,10 +81,16 @@ class HandeyeTfNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    node = HandeyeTfNode()
     try:
-        rclpy.spin(HandeyeTfNode())
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        rclpy.shutdown()
+        try:
+            rclpy.try_shutdown()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 smart_grasp_detector:
   ros__parameters:
+    # true is a 2-D diagnostic mode: color + detector only, without depth or TF.
+    camera_only: false
     detector_backend: hsv
     target_class: blue_block
     hsv_lower: [90, 80, 50]

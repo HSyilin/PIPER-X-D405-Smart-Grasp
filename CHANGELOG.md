@@ -11,6 +11,16 @@ cannot be reconstructed exactly from this repository.
 - Added `PROJECT_RULES.md` to make the no-upstream-push, traceability/rollback,
   and minimal-invasive-change-with-approval requirements persistent.
 
+### Fixed
+
+- Added an opt-in camera-only launch and detector path for smooth 2-D HSV/YOLO
+  diagnostics before the robot and hand-eye TF chain are connected. Production
+  RGB-D/TF behavior remains unchanged by default.
+- Set the VMware camera-only stream to the measured-stable `424x240x30` profile;
+  the production RGB-D pipeline remains at `640x480x30`.
+- Made detector and hand-eye node shutdown idempotent so `Ctrl+C` no longer emits
+  `rcl_shutdown already called` or leaves launch waiting for forced termination.
+
 ## 0.2.0 - 2026-07-26
 
 ### Added

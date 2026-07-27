@@ -239,6 +239,16 @@ PYTHONPATH=src/smart_grasp python3 -m pytest -q src/smart_grasp/test
 
 当前版本的结果是 9 项测试通过，四个抓取包和下层 MoveIt 修改均构建成功。
 
+如果机械臂驱动在导入 `pyAgxArm` 时报告 SDK 文件语法错误，而
+`~/pyAgxArm` 源码检查正常，应重装本地源码生成的用户级安装副本，不要直接
+修改 `site-packages`：
+
+```bash
+python3 -m pip install --user --force-reinstall --no-deps \
+  --no-build-isolation ~/pyAgxArm
+python3 -c "import pyAgxArm; print(pyAgxArm.__file__)"
+```
+
 ## 11. 启动和操作
 
 安全默认启动：
@@ -250,12 +260,33 @@ source ~/grasp_ws/install/setup.bash
 ros2 launch smart_grasp_bringup smart_grasp_system.launch.py
 ```
 
-仅感知，不启动 CAN、MoveIt 和动作服务器：
+如果机械臂驱动已在其他终端启动并正常发布 `/feedback/tcp_pose`，可避免重复
+启动驱动，只启动完整 RGB-D/TF 感知链，不启动 MoveIt 和动作服务器：
 
 ```bash
 ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
   use_driver:=false use_moveit:=false use_pick_server:=false use_rviz:=false
 ```
+
+机械臂尚未接入，或只需调试颜色识别时，使用独立二维相机调试模式。该模式
+不启动驱动、深度、手眼 TF、MoveIt 或抓取服务器，只验证彩色图和
+HSV/YOLO-Seg Mask。针对当前 VMware USB 转发环境，该模式使用实测可稳定达到
+30 FPS 的 `424x240x30`；完整 RGB-D 抓取仍使用 `640x480x30`：
+
+```bash
+ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=true
+```
+
+也可以不自动打开 GUI，再单独查看调试话题：
+
+```bash
+ros2 launch smart_grasp_bringup camera_only.launch.py
+ros2 run rqt_image_view rqt_image_view /smart_grasp/debug_image
+```
+
+二维模式发布的检测结果带有 `CAMERA_ONLY_2D` 拒绝原因，不能作为三维抓取
+目标。接入机械臂后应恢复 `smart_grasp_system.launch.py` 完成深度、TF 和尺寸
+验证。
 
 不接 CAN 的 MoveIt 集成检查：
 

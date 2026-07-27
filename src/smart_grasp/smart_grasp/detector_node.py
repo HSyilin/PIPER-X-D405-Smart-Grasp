@@ -49,18 +49,28 @@ class DetectorNode(Node):
         self.tracks = {}
         self.next_track_id = 1
 
-        color = message_filters.Subscriber(
-            self, Image, self.get_parameter("color_topic").value,
-            qos_profile=qos_profile_sensor_data,
-        )
-        depth = message_filters.Subscriber(
-            self, Image, self.get_parameter("depth_topic").value,
-            qos_profile=qos_profile_sensor_data,
-        )
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [color, depth], queue_size=8, slop=0.06
-        )
-        self.sync.registerCallback(self._image_callback)
+        self.camera_only = bool(self.get_parameter("camera_only").value)
+        if self.camera_only:
+            self.color_subscription = self.create_subscription(
+                Image,
+                self.get_parameter("color_topic").value,
+                self._color_only_callback,
+                qos_profile_sensor_data,
+            )
+            self.sync = None
+        else:
+            color = message_filters.Subscriber(
+                self, Image, self.get_parameter("color_topic").value,
+                qos_profile=qos_profile_sensor_data,
+            )
+            depth = message_filters.Subscriber(
+                self, Image, self.get_parameter("depth_topic").value,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self.sync = message_filters.ApproximateTimeSynchronizer(
+                [color, depth], queue_size=8, slop=0.06
+            )
+            self.sync.registerCallback(self._image_callback)
         self.create_subscription(
             CameraInfo,
             self.get_parameter("info_topic").value,
@@ -86,11 +96,13 @@ class DetectorNode(Node):
         )
         self.get_logger().info(
             f"detector ready: backend={self.get_parameter('detector_backend').value}, "
-            f"target={self.get_parameter('target_class').value}"
+            f"target={self.get_parameter('target_class').value}, "
+            f"camera_only={self.camera_only}"
         )
 
     def _declare_parameters(self):
         defaults = {
+            "camera_only": False,
             "detector_backend": "hsv",
             "target_class": "blue_block",
             "hsv_lower": [90, 80, 50],
@@ -126,6 +138,46 @@ class DetectorNode(Node):
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
+
+    def _color_only_callback(self, color_msg):
+        """Publish 2-D detector diagnostics without depth, robot feedback, or TF."""
+        bgr = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+        instances = self.backend.detect(bgr)
+        debug = bgr.copy()
+        if not instances:
+            cv2.putText(
+                debug, "CAMERA_ONLY: NO_TARGET", (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2,
+            )
+            self._publish_debug(debug, color_msg)
+            return
+
+        overlay = debug.copy()
+        for instance in instances:
+            overlay[instance.binary_mask > 0] = (255, 100, 0)
+        debug = cv2.addWeighted(overlay, 0.25, debug, 0.75, 0.0)
+
+        for instance in instances:
+            x, y, w, h = instance.bounding_rect
+            cv2.rectangle(debug, (x, y), (x + w, y + h), (0, 220, 0), 2)
+            label = (
+                f"{instance.class_name} conf={instance.confidence:.2f} "
+                f"angle={instance.angle_deg:.1f} CAMERA_ONLY"
+            )
+            cv2.putText(
+                debug, label, (x, max(18, y - 7)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 0), 1, cv2.LINE_AA,
+            )
+
+            msg = DetectedObject()
+            msg.header = color_msg.header
+            msg.class_name = instance.class_name
+            msg.confidence = float(instance.confidence)
+            msg.stable = False
+            msg.rejection_reason = "CAMERA_ONLY_2D"
+            self.detection_pub.publish(msg)
+
+        self._publish_debug(debug, color_msg)
 
     def _create_backend(self):
         mode = self.get_parameter("detector_backend").value
@@ -429,10 +481,16 @@ class DetectorNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    node = DetectorNode()
     try:
-        rclpy.spin(DetectorNode())
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        rclpy.shutdown()
+        try:
+            rclpy.try_shutdown()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
