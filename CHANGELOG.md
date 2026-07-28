@@ -28,6 +28,9 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Re-publish the `tcp_link -> camera_link` static hand-eye mount once per second
+  during the first startup window. This fixes a VMware/DDS discovery case where
+  both adjacent TF segments existed but the constructor-time mount sample was lost.
 - Stabilized RGB-D yaw estimation after stationary hardware tests showed 8-12 mm
   position span but 16-33 degree yaw span. PCA now uses only the top 8 mm surface
   band, and the pose window applies 180-degree-symmetric circular filtering with

@@ -29,6 +29,9 @@ explicit `grasp_executor_node` diagnostic executable. No default launch starts i
 
 > 外部依赖已对齐：`agx_arm_msgs::GripperStatus` 字段、`agx_arm_moveit` 的 SRDF 组 `arm` / link `tcp_link`、`gripper_base/link1/link2` 均匹配；`agx_arm_ws` 已编译。
 
+手眼节点会在启动后有限重发 `tcp_link -> camera_link` 静态TF，解决VMware中
+首个 transient-local 样本在DDS发现完成前发布而造成TF树断开的情况。
+
 ## Build
 
 ```bash

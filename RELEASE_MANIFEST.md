@@ -123,6 +123,9 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
   PCA改为只使用顶部8 mm点云带，并增加180度对称角圆周过滤和最多20%的离群
   帧剔除。新增3项回归后直接算法测试为 `16 passed`。实现提交为
   `554c326f74f5c55a6a7ab72ae3ef013eda72786c`。
+- 现场分段TF检查确认 `base_link -> tcp_link` 和相机内部TF正常，但构造阶段的
+  `tcp_link -> camera_link` 静态样本在VMware DDS发现期间丢失。手眼节点现于
+  启动窗口每秒有限重发，增加安装矩阵回归后直接测试为 `17 passed`。
 - 本记录仍属于 `Unreleased`，随本次修复提交保存但尚未建立发布标签；没有修改
   或推送官方源码仓库。
 

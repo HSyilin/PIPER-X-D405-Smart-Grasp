@@ -5,6 +5,11 @@ parent_frame: tcp_link
 camera_link_frame: camera_link
 optical_frame: camera_color_optical_frame
 
+# Repeat the static mount briefly after startup so late DDS discovery in VMware
+# cannot lose the constructor-time /tf_static sample.
+mount_republish_period: 1.0
+mount_republish_count: 10
+
 # Hand-eye result: T_tcp_camera_color_optical.
 tcp_to_color_optical:
   translation: [-0.018045765939069265, -0.07719211627055529, 0.05301916352619015]

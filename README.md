@@ -177,6 +177,8 @@ base_link -> tcp_link -> camera_link -> camera_color_optical_frame
 - `base_link -> tcp_link`：来自 `/feedback/tcp_pose` 的动态 TF。
 - `tcp_link -> camera_link`：由 2026-07-25 的 `T_tcp_color_optical` 和 D405
   内部 `T_camera_link_color_optical` 反算后发布。
+- 为避免 VMware/DDS 启动发现阶段丢失构造函数中的首个 `/tf_static` 样本，
+  `tcp_link -> camera_link` 启动后会以1秒周期有限重发，共发布10次。
 - `camera_link -> camera_color_optical_frame`：由 RealSense 驱动发布。
 - 图像必须使用自身时间戳查询 TF，不能把最新 TCP 与旧图像拼接。
 
