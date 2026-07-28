@@ -19,6 +19,7 @@ smart_grasp_detector:
     min_depth_points: 500
     min_depth_valid_ratio: 0.60
     point_outlier_radius: 0.030
+    orientation_surface_band: 0.008
     tf_lookup_timeout: 0.10
     # Used only by collision/grasp geometry; perception never measures or matches size.
     fixed_object_size: [0.060, 0.040, 0.040]
@@ -27,6 +28,7 @@ smart_grasp_detector:
     table_ransac_threshold: 0.004
     stability_frames: 10
     position_outlier_radius: 0.020
+    yaw_outlier_radius_deg: 12.0
     max_position_span: 0.015
     max_yaw_span_deg: 5.0
     ambiguity_score_gap: 0.10

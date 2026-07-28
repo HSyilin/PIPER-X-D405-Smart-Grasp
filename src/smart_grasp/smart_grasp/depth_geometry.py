@@ -88,7 +88,8 @@ def fit_horizontal_plane_z(points: np.ndarray, threshold=0.004, iterations=80):
 
 
 def estimate_oriented_box(
-    points: np.ndarray, fixed_size, table_z: Optional[float] = None
+    points: np.ndarray, fixed_size, table_z: Optional[float] = None,
+    orientation_surface_band=0.008,
 ):
     """Estimate target pose while taking all object dimensions from configuration."""
     if len(points) < 10:
@@ -96,7 +97,14 @@ def estimate_oriented_box(
     size = np.asarray(fixed_size, dtype=float)
     if size.shape != (3,) or np.any(size <= 0.0):
         raise ValueError("fixed object size must contain three positive dimensions")
-    xy = points[:, :2]
+    top_z = float(np.percentile(points[:, 2], 95.0))
+    surface_band = float(orientation_surface_band)
+    if surface_band <= 0.0:
+        raise ValueError("orientation surface band must be positive")
+    surface_points = points[points[:, 2] >= top_z - surface_band]
+    if len(surface_points) < max(10, int(0.1 * len(points))):
+        surface_points = points
+    xy = surface_points[:, :2]
     center_xy = np.median(xy, axis=0)
     covariance = np.cov(xy - center_xy, rowvar=False)
     values, vectors = np.linalg.eigh(covariance)
@@ -107,7 +115,6 @@ def estimate_oriented_box(
         short_axis = -short_axis
     if np.linalg.det(np.column_stack((short_axis, long_axis))) < 0.0:
         long_axis = -long_axis
-    top_z = float(np.percentile(points[:, 2], 95.0))
     bottom_z = float(table_z) if table_z is not None else top_z - float(size[2])
     center = np.array([center_xy[0], center_xy[1], 0.5 * (top_z + bottom_z)])
     yaw = float(np.arctan2(short_axis[1], short_axis[0]))

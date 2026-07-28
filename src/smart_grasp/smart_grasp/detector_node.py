@@ -120,12 +120,14 @@ class DetectorNode(Node):
             "min_depth_points": 500,
             "min_depth_valid_ratio": 0.60,
             "point_outlier_radius": 0.030,
+            "orientation_surface_band": 0.008,
             "tf_lookup_timeout": 0.10,
             "fixed_object_size": [0.060, 0.040, 0.040],
             "table_height": -999.0,
             "table_ransac_threshold": 0.004,
             "stability_frames": 10,
             "position_outlier_radius": 0.020,
+            "yaw_outlier_radius_deg": 12.0,
             "max_position_span": 0.015,
             "max_yaw_span_deg": 5.0,
             "ambiguity_score_gap": 0.10,
@@ -234,6 +236,9 @@ class DetectorNode(Node):
                 "window": PoseStabilityWindow(
                     self.get_parameter("stability_frames").value,
                     self.get_parameter("position_outlier_radius").value,
+                    math.radians(
+                        self.get_parameter("yaw_outlier_radius_deg").value
+                    ),
                 )
             }
         self.tracks[best_id]["center"] = center
@@ -298,8 +303,13 @@ class DetectorNode(Node):
             cv2.rectangle(debug, (x, y), (x + w, y + h), color, 2)
             if result is None:
                 continue
+            yaw_deg = math.degrees(2.0 * math.atan2(
+                result.pose.pose.orientation.z,
+                result.pose.pose.orientation.w,
+            ))
             label = result.rejection_reason or (
                 f"id={result.track_id} d={result.depth_valid_ratio:.2f} "
+                f"yaw={yaw_deg:.1f} "
                 f"stable={result.stable}"
             )
             cv2.putText(debug, label, (x, max(18, y - 7)), cv2.FONT_HERSHEY_SIMPLEX,
@@ -370,6 +380,7 @@ class DetectorNode(Node):
                 points_base,
                 self.get_parameter("fixed_object_size").value,
                 table_z,
+                self.get_parameter("orientation_surface_band").value,
             )
         except ValueError:
             self._invalid_detection(image_msg, instance, "INVALID_DEPTH", valid_ratio)
@@ -381,6 +392,14 @@ class DetectorNode(Node):
             self.get_parameter("max_position_span").value,
             math.radians(self.get_parameter("max_yaw_span_deg").value),
         )
+        box.center = stability.position
+        box.yaw = stability.yaw
+        box.short_axis = np.array([
+            math.cos(box.yaw), math.sin(box.yaw), 0.0
+        ])
+        box.long_axis = np.array([
+            -math.sin(box.yaw), math.cos(box.yaw), 0.0
+        ])
         msg = self._make_detection(
             image_msg,
             instance,

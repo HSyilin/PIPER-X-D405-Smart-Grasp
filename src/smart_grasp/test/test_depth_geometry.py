@@ -49,3 +49,23 @@ def test_outlier_radius_does_not_clip_large_configured_target():
     assert np.ptp(clipped[:, 0]) < 0.070
     assert np.ptp(preserved[:, 0]) > 0.100
     assert np.ptp(preserved[:, 1]) > 0.070
+
+
+def test_orientation_uses_top_surface_instead_of_blue_side_faces():
+    rng = np.random.default_rng(11)
+    top = np.column_stack((
+        rng.uniform(-0.02, 0.02, 2500),
+        rng.uniform(-0.053, 0.053, 2500),
+        rng.uniform(0.039, 0.040, 2500),
+    ))
+    side = np.column_stack((
+        rng.uniform(-0.060, 0.060, 5000),
+        rng.uniform(-0.010, 0.010, 5000),
+        rng.uniform(0.005, 0.030, 5000),
+    ))
+
+    box = estimate_oriented_box(
+        np.vstack((top, side)), [0.1065, 0.0765, 0.0300],
+        table_z=0.010, orientation_surface_band=0.008,
+    )
+    assert abs(np.dot(box.short_axis, [1.0, 0.0, 0.0])) > 0.95

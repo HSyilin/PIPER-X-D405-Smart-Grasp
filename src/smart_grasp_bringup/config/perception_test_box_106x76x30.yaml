@@ -20,6 +20,8 @@ smart_grasp_detector:
     min_depth_valid_ratio: 0.60
     # The box corner is about 66 mm from its center; 30 mm clips its perimeter.
     point_outlier_radius: 0.080
+    # Estimate yaw from the top 8 mm surface band, excluding blue side faces.
+    orientation_surface_band: 0.008
     # VMware scheduling can deliver image callbacks before the exact-time TF arrives.
     tf_lookup_timeout: 0.25
     # Used only by collision/grasp geometry; perception never measures or matches size.
@@ -28,6 +30,7 @@ smart_grasp_detector:
     table_ransac_threshold: 0.004
     stability_frames: 15
     position_outlier_radius: 0.020
+    yaw_outlier_radius_deg: 12.0
     max_position_span: 0.015
     max_yaw_span_deg: 5.0
     ambiguity_score_gap: 0.10

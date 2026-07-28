@@ -147,9 +147,9 @@ during a real action.
 - HSV 后端自动计算每个蓝色轮廓的像素面积、凸度、矩形度、二维外接矩形和
   图像内角度。这些数据用于二维筛选，单位是像素，不是物体的实际毫米尺寸。
 - 完整 RGB-D 模式读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
-  转换到 `base_link` 后通过 PCA 计算目标中心和水平朝向。
+  转换到 `base_link` 后通过顶部点云带 PCA 计算水平朝向，避免侧面深度干扰。
 - 不测量、不匹配物体长宽高，也没有 `SIZE_MISMATCH`。每个 `track_id` 的多帧
-  窗口只检查位置和水平角。
+  窗口只检查位置和水平角；180度对称角使用圆周统计并剔除少量离群帧。
 - `/smart_grasp/detections.size` 来自 `fixed_object_size` 配置，仅供碰撞盒和抓取
   几何使用，不参与颜色目标是否通过的判断。
 - `camera_only.launch.py` 没有深度和机械臂 TF，因此只能显示二维检测框和角度，

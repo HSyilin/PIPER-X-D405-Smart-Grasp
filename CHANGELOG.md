@@ -28,6 +28,10 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Stabilized RGB-D yaw estimation after stationary hardware tests showed 8-12 mm
+  position span but 16-33 degree yaw span. PCA now uses only the top 8 mm surface
+  band, and the pose window applies 180-degree-symmetric circular filtering with
+  bounded yaw-outlier rejection before publishing the filtered pose.
 - Parameterized exact-time TF lookup timeout and set the VMware test-box profile
   to 250 ms to tolerate scheduling delay without falling back to latest TF.
 - Added an opt-in `106.5 x 76.5 x 30 mm` fixed-geometry test-box profile and made
