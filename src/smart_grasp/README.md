@@ -32,6 +32,10 @@ explicit `grasp_executor_node` diagnostic executable. No default launch starts i
 手眼节点会在启动后有限重发 `tcp_link -> camera_link` 静态TF，解决VMware中
 首个 transient-local 样本在DDS发现完成前发布而造成TF树断开的情况。
 
+`perception_test_box_106x76x30.yaml` 是现场调试专用配置：使用8帧窗口、
+30度角度内点半径和20度单姿态角度极差。该放宽不改变下方手眼验证要求的
+20 mm位置极差和3度方向极差。
+
 ## Build
 
 ```bash

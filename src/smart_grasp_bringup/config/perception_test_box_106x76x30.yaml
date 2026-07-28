@@ -28,11 +28,11 @@ smart_grasp_detector:
     fixed_object_size: [0.1065, 0.0765, 0.0300]
     table_height: -999.0
     table_ransac_threshold: 0.004
-    stability_frames: 15
+    stability_frames: 8
     position_outlier_radius: 0.020
-    yaw_outlier_radius_deg: 12.0
+    yaw_outlier_radius_deg: 30.0
     max_position_span: 0.015
-    max_yaw_span_deg: 5.0
+    max_yaw_span_deg: 20.0
     ambiguity_score_gap: 0.10
     grasp_depth: 0.020
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]

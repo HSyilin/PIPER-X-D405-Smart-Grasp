@@ -28,6 +28,9 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Relaxed only the measured test-box commissioning profile to an 8-frame window,
+  a 30-degree yaw inlier radius, and a 20-degree per-pose yaw span. The 15 mm
+  position gate and final 20 mm / 3-degree hand-eye validation remain unchanged.
 - Re-publish the `tcp_link -> camera_link` static hand-eye mount once per second
   during the first startup window. This fixes a VMware/DDS discovery case where
   both adjacent TF segments existed but the constructor-time mount sample was lost.
