@@ -8,6 +8,9 @@ cannot be reconstructed exactly from this repository.
 
 ### Changed
 
+- Smart-grasp launches now lock remote arm-disable requests during observation
+  and pick execution. Intentional shutdown must explicitly release the lock;
+  closing the external trajectory gate continues to leave servo enable intact.
 - Raised the camera-only default color profile from `424x240x30` to
   `640x480x30` and exposed `color_profile` as a launch argument.
 - At the project owner's direction, removed visual physical-size estimation,
@@ -18,6 +21,14 @@ cannot be reconstructed exactly from this repository.
 
 ### Documentation
 
+- Added a complete, guarded commissioning procedure for one real pick of the
+  measured `106.5 x 76.5 x 30.0 mm` test box, covering CAN activation, plan-only
+  checks, runtime gates, explicit enable, emergency stop, result acceptance,
+  supported release, and shutdown. Updated the recorded calibration, test, and
+  real-arm acceptance status to match the latest field work.
+- Documented the verified Home-to-observation recovery path, including the
+  asynchronous `/move_home` completion check, powered Home hold, table collision
+  object, and 5% MoveGroup planning limits.
 - Added `PROJECT_RULES.md` to make the no-upstream-push, traceability/rollback,
   and minimal-invasive-change-with-approval requirements persistent.
 - Corrected the package README to match the implemented HSV/YOLO backends, TF
@@ -26,8 +37,24 @@ cannot be reconstructed exactly from this repository.
 - Documented that HSV pixel contour geometry is only a noise/shape filter and
   that aligned depth/PCA no longer estimates physical dimensions.
 
+### Validation
+
+- Completed the first full real-arm pick of the measured test box through
+  observation, re-detection, pregrasp, approach, `76.6 mm` contact validation,
+  attachment, and 50 mm lift. The action returned `success=true` and
+  `error_code=0`; post-action arm and gripper feedback remained enabled and
+  fault-free while the external trajectory gate was closed. After the operator
+  supported the object, the gripper opened to `0.090 m`, remote-disable was
+  explicitly unlocked, the arm returned `Agx_arm disabled`, and the complete
+  launch was stopped. Shutdown still exposed MoveIt/driver process-cleanup
+  errors that do not affect the completed pick.
+
 ### Fixed
 
+- Replaced top-surface PCA with a minimum-area rectangle for center/yaw and set
+  the measured test-box surface band to 20 mm. On a 42-frame stationary capture,
+  yaw span fell from 80.9 to 2.5 degrees and center span from 27.9 to 6.5 mm
+  without weakening the existing stability gates.
 - Relaxed only the measured test-box commissioning profile to an 8-frame window,
   a 30-degree yaw inlier radius, and a 20-degree per-pose yaw span. The 15 mm
   position gate and final 20 mm / 3-degree hand-eye validation remain unchanged.

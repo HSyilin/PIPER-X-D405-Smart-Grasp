@@ -135,6 +135,25 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
 - 本记录仍属于 `Unreleased`，随本次修复提交保存但尚未建立发布标签；没有修改
   或推送官方源码仓库。
 
+## 未发布真机验收记录（2026-08-02）
+
+- `agx_arm_ctrl` 新增默认兼容的动态参数 `allow_remote_disable`；普通驱动默认
+  为 true，智能夹取 launch 显式设为 false。保护开启时远程失能请求被拒绝，
+  `control_enable=false` 仍只关闭外部轨迹命令，不取消伺服使能。
+- 远程失能保护单元测试 `3 passed`；`agx_arm_ctrl`、`agx_arm_moveit` 和
+  `smart_grasp_bringup` 定向构建通过。
+- 实机动作从 Home 开始，依次完成观察位、稳定检测、双候选 RRTConnect、
+  预抓取、笛卡尔下降、夹紧、接触验证、目标附着和 50 mm 抬升。
+- 动作结果为 `success=true`、`error_code=0`，接触宽度 `0.0766 m`；动作后
+  `arm_status=0`、`err_status=0`、`motion_status=0`，夹爪反馈宽度约
+  `0.0764 m`，机械臂和夹爪保持使能且所有夹爪故障字段为 false。
+- 现场人员托稳物体后，夹爪打开至 `0.090 m`（控制器成功，实际约 `0.0897 m`），
+  临时解锁 `allow_remote_disable` 并调用失能服务，驱动返回
+  `success=true`、`Agx_arm disabled`；随后停止完整 launch，相关节点均已退出。
+- 停止阶段记录到 MoveIt 退出段错误及驱动超时强制结束，均发生在机械臂失能之后，
+  归类为待修复的 ROS 进程清理问题，不影响本次真机验收。
+- 尚未完成 10 次至少 9 次成功的重复性验收，本记录仍属于 `Unreleased`。
+
 ## 查看与无破坏回档
 
 ```bash
