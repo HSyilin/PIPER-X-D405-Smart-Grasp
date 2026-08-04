@@ -154,6 +154,46 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
   归类为待修复的 ROS 进程清理问题，不影响本次真机验收。
 - 尚未完成 10 次至少 9 次成功的重复性验收，本记录仍属于 `Unreleased`。
 
+## 未发布抓取路径安全修复（2026-08-04）
+
+- 修改前建立本地基线提交 `0b17a2c` 和带注释标签
+  `smart-grasp-pre-candidate-validation-20260804`，只保存本次修改会覆盖的
+  已有现场配置与服务器状态，未纳入工作区中的其他用户改动。
+- 抓取服务器可在任何真实运动之前，对两个可规划的 180 度腕部候选分别完成
+  预抓取 RRTConnect 和完整笛卡尔下降验证；测试盒配置要求下降路径比例为
+  `1.0`，任一未到达目标或存在腕部跳变的候选均不参与执行。
+- 测试盒配置使用 `validate_only` 预抓取复观模式。服务器等待晚于预抓取稳定
+  时刻的同一 `track_id` 稳定检测，只比较位置和 180 度对称朝向，不再用新坐标
+  覆盖观察位锁定的抓取坐标。XY、Z、轴向偏航阈值分别为 5 mm、5 mm、5 度，
+  超限返回 `STALE_TARGET` 并在下降前中止。
+- 测试盒预抓取高度由 100 mm 提高到 120 mm，观察姿态 J5 设为 0。
+- 新增 4 项 C++ 回归测试，覆盖阈值边界、各项独立拒绝、180 度朝向对称和
+  笛卡尔完整率/腕部跳变拒绝；定向构建和测试均通过。
+- 隔离 `ROS_DOMAIN_ID=43` 的 FakeSystem 正向测试确认两个候选均在
+  `EXEC_PREGRASP` 之前进入 `PLAN_APPROACH_CANDIDATE`，随后完成下降、闭合和
+  50 mm 抬升，结果为 `success=true`、`error_code=0`。
+- 同一 FakeSystem 负向测试在预抓取后注入 8 mm 横向偏移，结果为
+  `STALE_TARGET (7)`，且未进入 `CARTESIAN_APPROACH`。真实 CAN 驱动和真机节点
+  未由本次验证启动、重启、替换或失能；真机执行仍需操作员单独确认。
+
+本修复完成标签为 `smart-grasp-candidate-validation-20260804`。运行时需要临时
+恢复旧行为时，在新服务器上设置：
+
+```bash
+ros2 param set /smart_grasp_pick_server validate_all_candidate_approaches false
+ros2 param set /smart_grasp_pick_server pregrasp_reobserve_mode update
+```
+
+需要永久回退本次提交时，使用标签生成可审计的反向提交，不重写历史：
+
+```bash
+git -C ~/grasp_ws revert smart-grasp-candidate-validation-20260804
+```
+
+修改前文件可通过
+`git -C ~/grasp_ws show smart-grasp-pre-candidate-validation-20260804:<路径>`
+单独查看或恢复。
+
 ## 查看与无破坏回档
 
 ```bash

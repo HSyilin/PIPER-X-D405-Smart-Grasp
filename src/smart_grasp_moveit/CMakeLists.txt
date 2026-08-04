@@ -22,6 +22,7 @@ find_package(trajectory_msgs REQUIRED)
 
 add_executable(pick_server src/pick_server.cpp)
 target_compile_features(pick_server PUBLIC cxx_std_17)
+target_include_directories(pick_server PRIVATE include)
 ament_target_dependencies(pick_server
   agx_arm_msgs control_msgs geometry_msgs moveit_msgs
   moveit_ros_planning_interface rclcpp rclcpp_action sensor_msgs shape_msgs
@@ -29,4 +30,14 @@ ament_target_dependencies(pick_server
 )
 
 install(TARGETS pick_server DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_pick_safety test/test_pick_safety.cpp)
+  target_compile_features(test_pick_safety PUBLIC cxx_std_17)
+  target_include_directories(test_pick_safety PRIVATE include)
+  ament_target_dependencies(test_pick_safety geometry_msgs)
+endif()
+
 ament_package()

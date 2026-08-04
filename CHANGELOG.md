@@ -51,6 +51,15 @@ cannot be reconstructed exactly from this repository.
 
 ### Fixed
 
+- Validate the complete Cartesian descent for every plannable 180-degree wrist
+  candidate before any real motion. The measured test-box profile now requires
+  a `1.0` Cartesian fraction and uses a 120 mm pregrasp clearance.
+- Changed test-box pregrasp reobservation to a fresh, same-track validation gate.
+  The server keeps the pose locked at the observation position and aborts before
+  descent if the new center moves more than 5 mm, height changes more than 5 mm,
+  or the 180-degree-symmetric yaw changes more than 5 degrees.
+- Set the measured test-box observation pose wrist joint J5 to zero so the real
+  wrist orientation matches the intended observation configuration.
 - Replaced top-surface PCA with a minimum-area rectangle for center/yaw and set
   the measured test-box surface band to 20 mm. On a 42-frame stationary capture,
   yaw span fell from 80.9 to 2.5 degrees and center span from 27.9 to 6.5 mm

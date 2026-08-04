@@ -14,12 +14,18 @@ smart_grasp_pick_server:
     detection_wait_timeout: 1.0
     stable_detection_wait_timeout: 3.0
     ambiguity_score_gap: 0.10
-    pregrasp_distance: 0.100
+    pregrasp_distance: 0.120
     grasp_depth: 0.020
     lift_height: 0.050
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
     cartesian_step: 0.005
-    cartesian_min_fraction: 0.95
+    # Do not execute a trajectory that stops short of the grasp or lift pose.
+    cartesian_min_fraction: 1.0
+    validate_all_candidate_approaches: true
+    pregrasp_reobserve_mode: validate_only
+    reobserve_max_xy_shift: 0.005
+    reobserve_max_z_shift: 0.005
+    reobserve_max_axis_yaw_deg: 5.0
     start_joint_tolerance: 0.05
     # Wait for physical feedback after each FakeSystem trajectory completes.
     execution_joint_tolerance: 0.03
@@ -27,7 +33,7 @@ smart_grasp_pick_server:
     wrist_jump_threshold: 0.5
     # Recorded from five identical real-arm samples on 2026-08-01. The pick
     # state machine must reach this eye-in-hand observation pose before detect.
-    observation_joint_positions: [0.0, 0.195633956, -0.481920313, 0.945113243, -0.117355939, 0.0]
+    observation_joint_positions: [0.0, 0.195633956, -0.481920313, 0.945113243, 0.0, 0.0]
     observation_joint_tolerance: 0.02
     # Fixed temporary values for grasping the measured 76.5 mm short edge.
     gripper_open: 0.090

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <future>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -35,6 +36,8 @@
 #include <tf2/LinearMath/Vector3.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
+
+#include "smart_grasp_moveit/pick_safety.hpp"
 
 using namespace std::chrono_literals;
 
@@ -69,6 +72,11 @@ public:
     declare_parameter("tcp_to_grasp_xyz", std::vector<double>{0.0, 0.0, 0.1425});
     declare_parameter("cartesian_step", 0.005);
     declare_parameter("cartesian_min_fraction", 0.95);
+    declare_parameter("validate_all_candidate_approaches", false);
+    declare_parameter("pregrasp_reobserve_mode", "update");
+    declare_parameter("reobserve_max_xy_shift", 0.005);
+    declare_parameter("reobserve_max_z_shift", 0.005);
+    declare_parameter("reobserve_max_axis_yaw_deg", 5.0);
     declare_parameter("start_joint_tolerance", 0.05);
     declare_parameter("execution_joint_tolerance", 0.03);
     declare_parameter("execution_settle_timeout", 20.0);
@@ -147,6 +155,8 @@ private:
     geometry_msgs::msg::Pose grasp;
     geometry_msgs::msg::Pose pregrasp;
     moveit::planning_interface::MoveGroupInterface::Plan plan;
+    moveit_msgs::msg::RobotTrajectory validated_approach;
+    double approach_fraction{0.0};
     double score{0.0};
     bool reverse{false};
   };
@@ -252,7 +262,8 @@ private:
 
   std::vector<smart_grasp_interfaces::msg::DetectedObject> currentDetections(
     const std::string & target_class,
-    const std::optional<uint32_t> target_track_id = std::nullopt)
+    const std::optional<uint32_t> target_track_id = std::nullopt,
+    const std::optional<rclcpp::Time> minimum_stamp = std::nullopt)
   {
     std::vector<smart_grasp_interfaces::msg::DetectedObject> current;
     const auto now = get_clock()->now();
@@ -263,6 +274,7 @@ private:
       const double age = (now - rclcpp::Time(object.header.stamp)).seconds();
       if (object.class_name == target_class &&
         (!target_track_id || object.track_id == *target_track_id) &&
+        (!minimum_stamp || rclcpp::Time(object.header.stamp) > *minimum_stamp) &&
         age >= 0.0 && age <= max_age)
       {
         current.push_back(object);
@@ -277,14 +289,15 @@ private:
   std::vector<smart_grasp_interfaces::msg::DetectedObject> waitForCurrentDetections(
     const std::string & target_class,
     const std::optional<uint32_t> target_track_id = std::nullopt,
-    bool require_stable = false)
+    bool require_stable = false,
+    const std::optional<rclcpp::Time> minimum_stamp = std::nullopt)
   {
     const auto timeout = std::chrono::duration<double>(
       get_parameter(
         require_stable ? "stable_detection_wait_timeout" : "detection_wait_timeout").as_double());
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true) {
-      auto current = currentDetections(target_class, target_track_id);
+      auto current = currentDetections(target_class, target_track_id, minimum_stamp);
       const bool ready = !current.empty() &&
         (!require_stable || std::any_of(current.begin(), current.end(), [](const auto & object) {
           return object.stable && object.rejection_reason.empty();
@@ -295,7 +308,7 @@ private:
       std::unique_lock<std::mutex> lock(data_mutex_);
       if (detection_condition_.wait_until(lock, deadline) == std::cv_status::timeout) {
         lock.unlock();
-        return currentDetections(target_class, target_track_id);
+        return currentDetections(target_class, target_track_id, minimum_stamp);
       }
     }
   }
@@ -719,8 +732,9 @@ private:
     std::vector<geometry_msgs::msg::Pose> waypoints{target};
     *fraction = move_group_->computeCartesianPath(
       waypoints, get_parameter("cartesian_step").as_double(), 0.0, trajectory, true);
-    return *fraction >= get_parameter("cartesian_min_fraction").as_double() &&
-           !hasWristJump(trajectory);
+    return smart_grasp_moveit::cartesianCandidateAccepted(
+      *fraction, get_parameter("cartesian_min_fraction").as_double(),
+      hasWristJump(trajectory));
   }
 
   void setStartFromTrajectory(const moveit_msgs::msg::RobotTrajectory & trajectory)
@@ -753,6 +767,26 @@ private:
     if (do_execute && !tableConfigured()) {
       abort(handle, PickObject::Result::TABLE_UNCONFIGURED,
         "table size and height must be measured before observation motion");
+      return;
+    }
+    const std::string reobserve_mode = get_parameter("pregrasp_reobserve_mode").as_string();
+    if (reobserve_mode != "update" && reobserve_mode != "validate_only") {
+      abort(handle, PickObject::Result::INTERNAL_ERROR,
+        "pregrasp_reobserve_mode must be update or validate_only");
+      return;
+    }
+    const double reobserve_max_xy = get_parameter("reobserve_max_xy_shift").as_double();
+    const double reobserve_max_z = get_parameter("reobserve_max_z_shift").as_double();
+    const double reobserve_max_yaw =
+      get_parameter("reobserve_max_axis_yaw_deg").as_double() *
+      smart_grasp_moveit::kPi / 180.0;
+    if (reobserve_mode == "validate_only" &&
+      (!std::isfinite(reobserve_max_xy) || reobserve_max_xy < 0.0 ||
+      !std::isfinite(reobserve_max_z) || reobserve_max_z < 0.0 ||
+      !std::isfinite(reobserve_max_yaw) || reobserve_max_yaw < 0.0))
+    {
+      abort(handle, PickObject::Result::INTERNAL_ERROR,
+        "reobserve validation limits must be finite and non-negative");
       return;
     }
     if (!atObservationPose()) {
@@ -849,6 +883,10 @@ private:
     const auto offset = get_parameter("tcp_to_grasp_xyz").as_double_array();
     std::vector<Candidate> candidates;
     bool wrist_jump_rejected = false;
+    bool cartesian_rejected = false;
+    std::vector<double> rejected_approach_fractions;
+    const bool validate_candidate_approaches =
+      get_parameter("validate_all_candidate_approaches").as_bool();
     for (bool reverse : {false, true}) {
       Candidate candidate;
       candidate.reverse = reverse;
@@ -866,12 +904,41 @@ private:
         if (hasWristJump(candidate.plan.trajectory_)) {
           wrist_jump_rejected = true;
         } else {
-          candidate.score = detectionScore(object) - 0.05 * trajectoryLength(candidate.plan.trajectory_);
+          if (validate_candidate_approaches) {
+            setStartFromTrajectory(candidate.plan.trajectory_);
+            feedback(handle, "PLAN_APPROACH_CANDIDATE",
+              "validating complete Cartesian approach candidate", 2);
+            const bool approach_valid = planCartesian(
+              candidate.grasp, candidate.validated_approach,
+              &candidate.approach_fraction);
+            move_group_->setStartStateToCurrentState();
+            if (!approach_valid) {
+              cartesian_rejected = true;
+              rejected_approach_fractions.push_back(candidate.approach_fraction);
+              continue;
+            }
+          }
+          candidate.score = detectionScore(object) -
+            0.05 * trajectoryLength(candidate.plan.trajectory_) -
+            0.02 * trajectoryLength(candidate.validated_approach);
           candidates.push_back(std::move(candidate));
         }
       }
     }
+    move_group_->setStartStateToCurrentState();
     if (candidates.empty()) {
+      if (cartesian_rejected) {
+        std::ostringstream message;
+        message << "no wrist candidate has a complete Cartesian approach; fractions=";
+        for (size_t index = 0; index < rejected_approach_fractions.size(); ++index) {
+          if (index > 0) {
+            message << ',';
+          }
+          message << std::fixed << std::setprecision(6) << rejected_approach_fractions[index];
+        }
+        abort(handle, PickObject::Result::CARTESIAN_INCOMPLETE, message.str(), &object);
+        return;
+      }
       abort(handle,
         wrist_jump_rejected ? PickObject::Result::WRIST_JUMP : PickObject::Result::PLANNING_FAILED,
         wrist_jump_rejected ? "all pregrasp plans contain a wrist jump" :
@@ -890,6 +957,7 @@ private:
     if (canceled(handle)) {return;}
     feedback(handle, "EXEC_PREGRASP", do_execute ? "executing pregrasp" : "plan-only: pregrasp accepted",
       candidates.size());
+    std::optional<rclcpp::Time> reobserve_after;
     if (do_execute) {
       if (!commandGripper(get_parameter("gripper_open").as_double())) {
         abort(handle, PickObject::Result::GRIPPER_FAULT,
@@ -910,14 +978,20 @@ private:
       }
       std::this_thread::sleep_for(500ms);
       move_group_->setStartStateToCurrentState();
+      reobserve_after = get_clock()->now();
     } else {
       setStartFromTrajectory(selected.plan.trajectory_);
     }
-    feedback(handle, "REOBSERVE", "using latest stable object pose at pregrasp", candidates.size());
+    feedback(handle, "REOBSERVE",
+      reobserve_mode == "validate_only" ?
+      "validating a fresh pregrasp observation without changing the grasp pose" :
+      "using latest stable object pose at pregrasp",
+      candidates.size());
     if (canceled(handle)) {return;}
     if (do_execute) {
       auto refreshed = waitForCurrentDetections(
-        object.class_name, object.track_id, true);
+        object.class_name, object.track_id, true,
+        reobserve_mode == "validate_only" ? reobserve_after : std::nullopt);
       auto same_track = std::find_if(refreshed.begin(), refreshed.end(), [&object](const auto & item) {
         return item.track_id == object.track_id && item.stable && item.rejection_reason.empty();
       });
@@ -926,13 +1000,32 @@ private:
           "target was not stable after reaching pregrasp", &object);
         return;
       }
-      selected.object = *same_track;
-      selected.grasp = makeGraspPose(
-        selected.object, selected.reverse, get_parameter("grasp_depth").as_double(), offset);
-      if (!applyScene(selected.object)) {
-        abort(handle, PickObject::Result::PLANNING_FAILED,
-          "failed to update the MoveIt planning scene", &object);
-        return;
+      if (reobserve_mode == "validate_only") {
+        const auto delta = smart_grasp_moveit::poseDelta(
+          object.pose.pose, same_track->pose.pose);
+        if (!smart_grasp_moveit::poseDeltaAccepted(
+            delta, reobserve_max_xy, reobserve_max_z, reobserve_max_yaw))
+        {
+          std::ostringstream message;
+          message << std::fixed << std::setprecision(4)
+                  << "pregrasp observation differs from locked pose: xy=" << delta.xy
+                  << " z=" << delta.z << " axis_yaw_deg="
+                  << delta.axis_yaw * 180.0 / smart_grasp_moveit::kPi;
+          abort(handle, PickObject::Result::STALE_TARGET, message.str(), &object);
+          return;
+        }
+        feedback(handle, "REOBSERVE_VALIDATED",
+          "fresh pregrasp observation accepted; keeping locked observation pose",
+          candidates.size());
+      } else {
+        selected.object = *same_track;
+        selected.grasp = makeGraspPose(
+          selected.object, selected.reverse, get_parameter("grasp_depth").as_double(), offset);
+        if (!applyScene(selected.object)) {
+          abort(handle, PickObject::Result::PLANNING_FAILED,
+            "failed to update the MoveIt planning scene", &object);
+          return;
+        }
       }
     }
     moveit_msgs::msg::RobotTrajectory approach;
