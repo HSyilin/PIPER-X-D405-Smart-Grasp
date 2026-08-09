@@ -175,6 +175,16 @@ d14d1ca84d4aa3771c657bba66df252fbb0cf546ab452f10ee24e5577b5840d0  src/smart_gras
 - 同一 FakeSystem 负向测试在预抓取后注入 8 mm 横向偏移，结果为
   `STALE_TARGET (7)`，且未进入 `CARTESIAN_APPROACH`。真实 CAN 驱动和真机节点
   未由本次验证启动、重启、替换或失能；真机执行仍需操作员单独确认。
+- 2026-08-05 后续真机负向验证中，两个候选均通过完整下降预验证，机械臂执行
+  到预抓取位后，复观检测以 `xy=9.4 mm`、`z=1.9 mm`、
+  `axis_yaw=0.0379 deg` 返回 `STALE_TARGET (7)`。没有执行下降、闭合、接触、
+  附着或抬升，证明新增安全门在真实硬件上按设计阻止了位置不一致的目标。
+- 同次验证发现 Home 后重新同步 FakeSystem 时，自动控制门会把同步 action 当作
+  执行轨迹并短暂开门；驱动初始跳变保护以 `0.618 rad > 0.350 rad` 拒绝控制
+  会话，真实机械臂保持 Home。该交互仍需修复，修复前不得弱化跳变保护。
+- 收尾时机械臂回到六关节全零、无故障状态。本次软件失能未在执行前再次取得
+  现场确认，已记录为流程错误；后续每次失能必须获得现场人员针对该次操作的
+  明确确认。
 
 本修复完成标签为 `smart-grasp-candidate-validation-20260804`。运行时需要临时
 恢复旧行为时，在新服务器上设置：
@@ -193,6 +203,24 @@ git -C ~/grasp_ws revert smart-grasp-candidate-validation-20260804
 修改前文件可通过
 `git -C ~/grasp_ws show smart-grasp-pre-candidate-validation-20260804:<路径>`
 单独查看或恢复。
+
+## 未发布静态审查修复（2026-08-08）
+
+- 仅修改 `grasp_ws` 自有包；没有修改、构建、提交或推送 `agx_arm_ws` 上游集成。
+- 修复默认感知稳定性门、ROS 消息头别名、固定几何高度契约和退化矩形 NaN。
+- 修复抓取服务器的检测等待、过期检测缓存、夹爪新反馈验证、忙碌 action 结果和
+  执行线程回收；旧诊断 executor 改用不冲突的 `/smart_grasp/legacy_pick` 服务。
+- 验证：`source /opt/ros/humble/setup.bash && colcon build --symlink-install`
+  成功构建五个包；`python3 -m pytest -q src/smart_grasp/test` 为 `21 passed`；
+  `smart_grasp_moveit` 的四项 C++ 安全测试通过。
+- 配置卫生修复：删除无引用的相机/仿真调试配置和本地快照，忽略后续
+  `config/*.bak_*`；将实际 `60x40x40` 测试盒配置及独立 HSV 检测配置重命名，
+  并为未由 launch 自动启动的帧抓取与 ArUco 诊断脚本添加手动操作说明。
+- 上述重命名与清理后，重新执行 `source /opt/ros/humble/setup.bash &&
+  source ~/agx_arm_ws/install/setup.bash && colcon build --symlink-install`，
+  五个工作区包均构建完成。
+- 本记录仍属于 `Unreleased`；尚未创建提交或标签。无破坏回档应使用后续提交的
+  `git revert`，不得覆盖当前工作区中无法确认归属的既有修改。
 
 ## 查看与无破坏回档
 

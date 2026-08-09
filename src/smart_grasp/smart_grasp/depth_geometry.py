@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -91,7 +92,7 @@ def estimate_oriented_box(
     points: np.ndarray, fixed_size, table_z: Optional[float] = None,
     orientation_surface_band=0.008,
 ):
-    """Estimate target pose while taking all object dimensions from configuration."""
+    """Estimate target pose while taking all collision dimensions from configuration."""
     if len(points) < 10:
         raise ValueError("not enough points for OBB")
     size = np.asarray(fixed_size, dtype=float)
@@ -104,18 +105,24 @@ def estimate_oriented_box(
     surface_points = points[points[:, 2] >= top_z - surface_band]
     if len(surface_points) < max(10, int(0.1 * len(points))):
         surface_points = points
-    xy = surface_points[:, :2]
-    center_xy = np.median(xy, axis=0)
-    covariance = np.cov(xy - center_xy, rowvar=False)
-    values, vectors = np.linalg.eigh(covariance)
-    order = np.argsort(values)[::-1]
-    long_axis = vectors[:, order[0]]
-    short_axis = vectors[:, order[1]]
+    xy = surface_points[:, :2].astype(np.float32)
+    rectangle = cv2.minAreaRect(xy)
+    center_xy = np.asarray(rectangle[0], dtype=float)
+    corners = cv2.boxPoints(rectangle).astype(float)
+    edges = np.roll(corners, -1, axis=0) - corners
+    edge_lengths = np.linalg.norm(edges, axis=1)
+    short_axis = edges[int(np.argmin(edge_lengths))]
+    short_axis_length = np.linalg.norm(short_axis)
+    if not np.isfinite(short_axis_length) or short_axis_length < 1e-8:
+        raise ValueError("degenerate top-surface rectangle")
+    short_axis /= short_axis_length
     if short_axis[0] < 0.0:
         short_axis = -short_axis
-    if np.linalg.det(np.column_stack((short_axis, long_axis))) < 0.0:
-        long_axis = -long_axis
-    bottom_z = float(table_z) if table_z is not None else top_z - float(size[2])
+    long_axis = np.array([-short_axis[1], short_axis[0]])
+    # The fixed geometry is the collision/grasp contract. Anchor its top at the
+    # measured top surface so downstream reconstruction from center + size is
+    # self-consistent even when the observed height differs from the profile.
+    bottom_z = top_z - float(size[2])
     center = np.array([center_xy[0], center_xy[1], 0.5 * (top_z + bottom_z)])
     yaw = float(np.arctan2(short_axis[1], short_axis[0]))
     return OrientedBox(
@@ -149,6 +156,8 @@ def quaternion_from_axes(x_axis, z_axis):
 
 
 def make_grasp_candidates(box: OrientedBox, grasp_depth, tcp_to_grasp_xyz):
+    # Piper-X's finger motion resolves to TCP X in the MoveIt URDF. Keep that
+    # closing axis on the object's short edge; the second pose reverses it 180 deg.
     z_tcp = np.array([0.0, 0.0, -1.0])
     grasp_center = np.array([box.center[0], box.center[1], box.top_z - grasp_depth])
     candidates = []

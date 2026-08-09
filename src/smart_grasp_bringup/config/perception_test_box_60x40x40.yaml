@@ -1,6 +1,6 @@
 smart_grasp_detector:
   ros__parameters:
-    # Temporary measured blue test box: 106.5 x 76.5 x 30.0 mm.
+    # Temporary measured blue test box: 60.0 x 40.0 x 40.0 mm.
     camera_only: false
     detector_backend: hsv
     target_class: blue_block
@@ -18,17 +18,20 @@ smart_grasp_detector:
     mask_erode_pixels: 3
     min_depth_points: 500
     min_depth_valid_ratio: 0.60
-    # The box corner is about 66 mm from its center; 30 mm clips its perimeter.
+    # Keep a generous radius around the rectangular top while rejecting
+    # far-away clutter.
     point_outlier_radius: 0.080
-    # Estimate yaw from the top 8 mm surface band, excluding blue side faces.
-    orientation_surface_band: 0.008
+    # A 20 mm band preserves a complete rectangle at D405 depth resolution.
+    orientation_surface_band: 0.020
     # VMware scheduling can deliver image callbacks before the exact-time TF arrives.
     tf_lookup_timeout: 0.25
     # Used only by collision/grasp geometry; perception never measures or matches size.
-    fixed_object_size: [0.1065, 0.0765, 0.0300]
-    table_height: -999.0
+    fixed_object_size: [0.0600, 0.0400, 0.0400]
+    # Confirmed from the current D405 point cloud in base_link: the blue block
+    # support plane is approximately 226.8 mm below base_link.
+    table_height: -0.2298
     table_ransac_threshold: 0.004
-    stability_frames: 8
+    stability_frames: 10
     position_outlier_radius: 0.020
     yaw_outlier_radius_deg: 30.0
     max_position_span: 0.015
@@ -38,6 +41,6 @@ smart_grasp_detector:
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
     base_frame: base_link
     camera_frame: camera_color_optical_frame
-    color_topic: /camera/camera/color/image_raw
+    color_topic: /camera/camera/color/image_rect_raw
     depth_topic: /camera/camera/aligned_depth_to_color/image_raw
     info_topic: /camera/camera/color/camera_info

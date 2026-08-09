@@ -1,6 +1,6 @@
 version: "2026-07-25_px_connected"
 method: eye_in_hand
-validated: false
+validated: true
 parent_frame: tcp_link
 camera_link_frame: camera_link
 optical_frame: camera_color_optical_frame

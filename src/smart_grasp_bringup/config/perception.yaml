@@ -2,15 +2,18 @@ smart_grasp_detector:
   ros__parameters:
     # true is a 2-D diagnostic mode: color + detector only, without depth or TF.
     camera_only: false
-    detector_backend: hsv
+    detector_backend: yolo_seg
     target_class: blue_block
     hsv_lower: [90, 80, 50]
     hsv_upper: [135, 255, 255]
     min_contour_area: 500.0
     min_solidity: 0.85
     min_rectangularity: 0.65
-    yolo_model: ""
-    yolo_class: blue_block
+    yolo_model: /home/guest/best.pt
+    # best.pt model.names == {0: '1'}; the backend matches against the model
+    # name, so this must be "1" (not "blue_block"). The published class_name
+    # equals this value, so the pick goal must also use target_class: "1".
+    yolo_class: "1"
     yolo_confidence: 0.70
     min_depth: 0.08
     max_depth: 0.60
@@ -22,10 +25,13 @@ smart_grasp_detector:
     orientation_surface_band: 0.008
     tf_lookup_timeout: 0.10
     # Used only by collision/grasp geometry; perception never measures or matches size.
-    fixed_object_size: [0.060, 0.040, 0.040]
-    # -999 means unknown. Fill the measured table top Z in base_link before execution.
-    table_height: -999.0
+    fixed_object_size: [0.060, 0.060, 0.040]
+    # measured table top Z in base_link (unified with grasp_test_box -0.2298 on 20260807).
+    table_height: -0.2298
     table_ransac_threshold: 0.004
+    # Explicit YOLO-only commissioning override. Keep false in the default
+    # profile so the stability gate remains active.
+    trust_yolo: false
     stability_frames: 10
     position_outlier_radius: 0.020
     yaw_outlier_radius_deg: 12.0
@@ -36,6 +42,6 @@ smart_grasp_detector:
     tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
     base_frame: base_link
     camera_frame: camera_color_optical_frame
-    color_topic: /camera/camera/color/image_raw
+    color_topic: /camera/camera/color/image_rect_raw
     depth_topic: /camera/camera/aligned_depth_to_color/image_raw
     info_topic: /camera/camera/color/camera_info

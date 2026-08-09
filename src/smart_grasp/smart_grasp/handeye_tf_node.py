@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Publish the eye-in-hand TF chain without giving an optical frame two parents."""
 
+import ast
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,40 @@ from scipy.spatial.transform import Rotation
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from smart_grasp.depth_geometry import matrix_from_transform
+
+
+_PIPER_X_JOINT_ORIGINS = (
+    ((0.0, 0.0, 0.123), (0.0, 0.0, 3.1415926)),
+    ((0.0, 0.0, 0.0), (-1.5707963, -3.005806, -3.1415926)),
+    ((0.28503, 0.0, 0.0), (0.0, 0.0, 2.8380798)),
+    ((0.27364, 0.0, 0.0), (0.0, 0.0, 0.0806342)),
+    ((0.07466, 0.0, 0.0), (-1.5707963, 1.5707963, 0.0)),
+    ((0.0, -0.035, 0.0), (1.5707963, 0.0, 0.0)),
+)
+
+
+def _origin_matrix(xyz, rpy):
+    transform = np.eye(4)
+    transform[:3, :3] = Rotation.from_euler("xyz", rpy).as_matrix()
+    transform[:3, 3] = np.asarray(xyz, dtype=float)
+    return transform
+
+
+def _joint_matrix(position):
+    transform = np.eye(4)
+    transform[:3, :3] = Rotation.from_euler("z", float(position)).as_matrix()
+    return transform
+
+
+def piper_x_base_to_tcp_matrix(joint_positions):
+    """Return T_base_tcp for the piper_x URDF with zero tcp_offset."""
+    positions = np.asarray(joint_positions, dtype=float)
+    if positions.shape != (6,) or not np.all(np.isfinite(positions)):
+        raise ValueError("offline observation joint positions must contain 6 finite values")
+    transform = np.eye(4)
+    for (xyz, rpy), position in zip(_PIPER_X_JOINT_ORIGINS, positions):
+        transform = transform @ _origin_matrix(xyz, rpy) @ _joint_matrix(position)
+    return transform
 
 
 def camera_mount_matrix(calibration):
@@ -33,6 +68,10 @@ class HandeyeTfNode(Node):
         self.declare_parameter("tcp_pose_topic", "/feedback/tcp_pose")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("tcp_frame", "tcp_link")
+        self.declare_parameter("base_to_tcp_source", "tcp_pose")
+        self.declare_parameter("offline_arm_type", "piper_x")
+        self.declare_parameter("offline_observation_joint_positions", "")
+        self.declare_parameter("offline_tf_period", 0.05)
         self.declare_parameter("mount_republish_period", 1.0)
         self.declare_parameter("mount_republish_count", 10)
         calibration_file = Path(
@@ -55,23 +94,57 @@ class HandeyeTfNode(Node):
         self.dynamic_broadcaster = TransformBroadcaster(self)
         self.static_broadcaster = StaticTransformBroadcaster(self)
         self.camera_mount_transform = self._camera_mount_transform()
+        self.base_to_tcp_source = str(
+            self.get_parameter("base_to_tcp_source").value
+        )
+        if self.base_to_tcp_source not in {"tcp_pose", "offline_observation"}:
+            raise ValueError(
+                "base_to_tcp_source must be 'tcp_pose' or 'offline_observation'"
+            )
         self.mount_publish_count = 0
         self._publish_camera_mount()
         self.mount_timer = self.create_timer(
             self.mount_republish_period,
             self._republish_camera_mount,
         )
-        self.create_subscription(
-            PoseStamped,
-            self.get_parameter("tcp_pose_topic").value,
-            self._tcp_callback,
-            10,
-        )
+        self.offline_base_to_tcp = None
+        if self.base_to_tcp_source == "tcp_pose":
+            self.create_subscription(
+                PoseStamped,
+                self.get_parameter("tcp_pose_topic").value,
+                self._tcp_callback,
+                10,
+            )
+        else:
+            self.offline_base_to_tcp = self._offline_base_to_tcp_matrix()
+            period = float(self.get_parameter("offline_tf_period").value)
+            if period <= 0.0:
+                raise ValueError("offline_tf_period must be positive")
+            self.offline_timer = self.create_timer(period, self._publish_offline_base_to_tcp)
+            self._publish_offline_base_to_tcp()
         validated = bool(self.calibration.get("validated", False))
         self.get_logger().info(
-            f"hand-eye TF ready, calibration validated={validated}; "
+            f"hand-eye TF ready, calibration_file={calibration_file}, "
+            f"validated={validated}, base_to_tcp_source={self.base_to_tcp_source}; "
             "validation is enforced independently by the pick action server"
         )
+
+    def _offline_joint_positions(self):
+        raw = self.get_parameter("offline_observation_joint_positions").value
+        if isinstance(raw, str):
+            if not raw.strip():
+                raise ValueError(
+                    "offline_observation_joint_positions is required when "
+                    "base_to_tcp_source is offline_observation"
+                )
+            raw = ast.literal_eval(raw)
+        return [float(value) for value in raw]
+
+    def _offline_base_to_tcp_matrix(self):
+        arm_type = str(self.get_parameter("offline_arm_type").value)
+        if arm_type != "piper_x":
+            raise ValueError("offline_observation currently supports only piper_x")
+        return piper_x_base_to_tcp_matrix(self._offline_joint_positions())
 
     def _camera_mount_transform(self):
         tcp_to_link = camera_mount_matrix(self.calibration)
@@ -104,11 +177,33 @@ class HandeyeTfNode(Node):
             return
         self._publish_camera_mount()
 
+    def _matrix_to_base_tcp_transform(self, matrix):
+        quaternion = Rotation.from_matrix(matrix[:3, :3]).as_quat()
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = self.get_parameter("base_frame").value
+        transform.child_frame_id = self.get_parameter("tcp_frame").value
+        (transform.transform.translation.x,
+         transform.transform.translation.y,
+         transform.transform.translation.z) = matrix[:3, 3]
+        (transform.transform.rotation.x,
+         transform.transform.rotation.y,
+         transform.transform.rotation.z,
+         transform.transform.rotation.w) = quaternion
+        return transform
+
+    def _publish_offline_base_to_tcp(self):
+        self.dynamic_broadcaster.sendTransform(
+            self._matrix_to_base_tcp_transform(self.offline_base_to_tcp)
+        )
+
     def _tcp_callback(self, msg):
         transform = TransformStamped()
-        transform.header.stamp = msg.header.stamp
-        if transform.header.stamp.sec == 0 and transform.header.stamp.nanosec == 0:
-            transform.header.stamp = self.get_clock().now().to_msg()
+        # The CAN driver timestamp comes from the controller's clock, which is
+        # not synchronized with the RealSense/ROS clock. TF must use the ROS
+        # receipt time so RGB-D image stamps and the live camera pose share a
+        # common time base.
+        transform.header.stamp = self.get_clock().now().to_msg()
         transform.header.frame_id = self.get_parameter("base_frame").value
         transform.child_frame_id = self.get_parameter("tcp_frame").value
         transform.transform.translation.x = msg.pose.position.x

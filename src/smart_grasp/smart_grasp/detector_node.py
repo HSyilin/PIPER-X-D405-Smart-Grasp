@@ -36,6 +36,11 @@ from smart_grasp.stability import PoseStabilityWindow
 from smart_grasp_interfaces.msg import DetectedObject
 
 
+def header_in_frame(source_header, frame_id):
+    """Create an independent header without mutating an input ROS message."""
+    return Header(stamp=source_header.stamp, frame_id=frame_id)
+
+
 class DetectorNode(Node):
     def __init__(self):
         super().__init__("smart_grasp_detector")
@@ -94,9 +99,15 @@ class DetectorNode(Node):
         self.marker_pub = self.create_publisher(
             MarkerArray, "/smart_grasp/debug_markers", 1
         )
+        backend_name = self.get_parameter("detector_backend").value
+        detector_target = (
+            self.get_parameter("yolo_class").value
+            if backend_name == "yolo_seg"
+            else self.get_parameter("target_class").value
+        )
         self.get_logger().info(
-            f"detector ready: backend={self.get_parameter('detector_backend').value}, "
-            f"target={self.get_parameter('target_class').value}, "
+            f"detector ready: backend={backend_name}, "
+            f"target={detector_target}, "
             f"camera_only={self.camera_only}"
         )
 
@@ -122,8 +133,9 @@ class DetectorNode(Node):
             "point_outlier_radius": 0.030,
             "orientation_surface_band": 0.008,
             "tf_lookup_timeout": 0.10,
-            "fixed_object_size": [0.060, 0.040, 0.040],
+            "fixed_object_size": [0.060, 0.060, 0.040],
             "table_height": -999.0,
+            "trust_yolo": False,
             "table_ransac_threshold": 0.004,
             "stability_frames": 10,
             "position_outlier_radius": 0.020,
@@ -138,6 +150,7 @@ class DetectorNode(Node):
             "color_topic": "/camera/camera/color/image_raw",
             "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
             "info_topic": "/camera/camera/color/camera_info",
+            "detection_rate": 8.0,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -248,8 +261,9 @@ class DetectorNode(Node):
 
     def _invalid_detection(self, image_msg, instance, reason, valid_ratio=0.0):
         msg = DetectedObject()
-        msg.header = image_msg.header
-        msg.header.frame_id = self.get_parameter("base_frame").value
+        msg.header = header_in_frame(
+            image_msg.header, self.get_parameter("base_frame").value
+        )
         msg.class_name = instance.class_name
         msg.confidence = float(instance.confidence)
         msg.depth_valid_ratio = float(valid_ratio)
@@ -260,6 +274,13 @@ class DetectorNode(Node):
     def _image_callback(self, color_msg, depth_msg):
         if self.camera_matrix is None:
             return
+        # 推理节流：YOLO 等后端不需要逐帧全速推理，降频以释放 CPU 给 move_group
+        det_rate = self.get_parameter("detection_rate").value
+        if det_rate and det_rate > 0.0:
+            now = time.monotonic()
+            if hasattr(self, "_last_inf") and (now - self._last_inf) < 1.0 / float(det_rate):
+                return
+            self._last_inf = time.monotonic()
         bgr = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
         raw_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
         try:
@@ -421,7 +442,12 @@ class DetectorNode(Node):
         self, image_msg, instance, box, track_id, valid_ratio, stability
     ):
         msg = DetectedObject()
-        msg.header.stamp = image_msg.header.stamp
+        # Publish the detection stamped with the node (system) clock rather than
+        # the camera clock. The Realsense camera clock drifts ~2-3s ahead of the
+        # host, and pick_server discards any detection whose age is not in
+        # [0, target_max_age]; using the system clock keeps age >= 0 so the
+        # YOLO-based target is accepted. TF lookups still use image_msg stamps.
+        msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.get_parameter("base_frame").value
         msg.track_id = track_id
         msg.class_name = instance.class_name
@@ -440,6 +466,12 @@ class DetectorNode(Node):
         msg.size.x, msg.size.y, msg.size.z = box.size[1], box.size[0], box.size[2]
         msg.depth_valid_ratio = float(valid_ratio)
         msg.stable = bool(stability.stable)
+        if (self.get_parameter("trust_yolo").value and
+                self.get_parameter("detector_backend").value == "yolo_seg"):
+            # This explicit YOLO-only override bypasses stability. Depth, TF,
+            # ambiguity, and an unavailable table estimate remain guarded.
+            msg.stable = True
+            msg.rejection_reason = ""
         return msg
 
     @staticmethod

@@ -4,6 +4,7 @@ bool execute
 uint16 OK=0
 uint16 NO_TARGET=1
 uint16 UNSTABLE_TARGET=2
+# Error code 3 is reserved for wire compatibility.
 uint16 AMBIGUOUS_TARGET=4
 uint16 INVALID_DEPTH=5
 uint16 TF_UNAVAILABLE=6

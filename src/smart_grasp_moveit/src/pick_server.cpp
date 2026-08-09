@@ -19,6 +19,8 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/trajectory_processing/iterative_time_parameterization.h>
 #include <moveit_msgs/msg/allowed_collision_entry.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <moveit_msgs/msg/planning_scene.hpp>
@@ -72,29 +74,45 @@ public:
     declare_parameter("tcp_to_grasp_xyz", std::vector<double>{0.0, 0.0, 0.1425});
     declare_parameter("cartesian_step", 0.005);
     declare_parameter("cartesian_min_fraction", 0.95);
+    declare_parameter("time_parameterize_cartesian", true);
+    declare_parameter("cartesian_velocity_scaling", -1.0);
+    declare_parameter("cartesian_acceleration_scaling", -1.0);
     declare_parameter("validate_all_candidate_approaches", false);
     declare_parameter("pregrasp_reobserve_mode", "update");
     declare_parameter("reobserve_max_xy_shift", 0.005);
     declare_parameter("reobserve_max_z_shift", 0.005);
     declare_parameter("reobserve_max_axis_yaw_deg", 5.0);
+    // When true, a missing/unstable reobservation is not fatal: keep the
+    // observation-pose locked target and proceed to grasp. Used for static
+    // objects / YOLO-based picking where the pregrasp top-down view may not
+    // reacquire the same track.
+    declare_parameter("allow_reobserve_fallback", true);
     declare_parameter("start_joint_tolerance", 0.05);
     declare_parameter("execution_joint_tolerance", 0.03);
     declare_parameter("execution_settle_timeout", 20.0);
     declare_parameter("wrist_jump_threshold", 0.5);
     declare_parameter("observation_joint_positions", std::vector<double>{});
     declare_parameter("observation_joint_tolerance", 0.02);
-    declare_parameter("gripper_open", 0.055);
-    declare_parameter("gripper_close", 0.0);
+    declare_parameter("post_pick_joint_positions", std::vector<double>{});
+    declare_parameter("post_pick_joint_tolerance", 0.05);
+    declare_parameter("post_pick_final_joint_positions", std::vector<double>{});
+    declare_parameter("post_pick_final_joint_tolerance", 0.05);
+    declare_parameter("gripper_open", 0.090);
+    declare_parameter("gripper_close", 0.050);
     declare_parameter("gripper_force", 0.5);
-    declare_parameter("contact_width_min", 0.032);
-    declare_parameter("contact_width_max", 0.048);
-    declare_parameter("simulation_contact_width", 0.0765);
+    declare_parameter("gripper_motion_time", 1.0);
+    declare_parameter("contact_width_min", 0.052);
+    declare_parameter("contact_width_max", 0.068);
+    declare_parameter("simulation_contact_width", 0.060);
     declare_parameter("gripper_timeout", 3.0);
+    declare_parameter("arm_action", "/arm_controller/follow_joint_trajectory");
     declare_parameter("gripper_action", "/gripper_controller/follow_joint_trajectory");
     declare_parameter("joint_state_topic", "/feedback/joint_states");
+    declare_parameter("target_class", "blue_block");
     declare_parameter("table_height", -999.0);
     declare_parameter("table_size", std::vector<double>{0.0, 0.0, 0.0});
     declare_parameter("table_center_xy", std::vector<double>{0.0, 0.0});
+    declare_parameter("target_table_clearance", 0.001);
     // Static obstacles fixed relative to base_frame (radar mast, main controller
     // box, cable trays, etc.). One obstacle per line, CSV without spaces:
     //   id,size_x,size_y,size_z,pos_x,pos_y,pos_z
@@ -116,8 +134,18 @@ public:
       std::bind(&PickServer::gripperCallback, this, std::placeholders::_1));
     planning_scene_client_ = create_client<moveit_msgs::srv::GetPlanningScene>(
       "/get_planning_scene");
+    arm_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
+      this, get_parameter("arm_action").as_string());
     gripper_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
       this, get_parameter("gripper_action").as_string());
+  }
+
+  ~PickServer() override
+  {
+    std::lock_guard<std::mutex> lock(execution_thread_mutex_);
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
   }
 
   void initialize()
@@ -165,6 +193,7 @@ private:
   {
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
+      pruneDetectionsLocked(get_clock()->now());
       detections_[msg->track_id] = *msg;
     }
     detection_condition_.notify_all();
@@ -185,6 +214,7 @@ private:
       std::lock_guard<std::mutex> lock(data_mutex_);
       latest_gripper_ = *msg;
       have_gripper_ = true;
+      ++gripper_feedback_sequence_;
     }
     gripper_condition_.notify_all();
   }
@@ -192,9 +222,6 @@ private:
   rclcpp_action::GoalResponse handleGoal(
     const rclcpp_action::GoalUUID &, std::shared_ptr<const PickObject::Goal>)
   {
-    if (busy_.exchange(true)) {
-      return rclcpp_action::GoalResponse::REJECT;
-    }
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -208,10 +235,25 @@ private:
 
   void handleAccepted(const std::shared_ptr<GoalHandle> goal_handle)
   {
-    std::thread([this, goal_handle]() {
-      execute(goal_handle);
+    if (busy_.exchange(true)) {
+      abort(goal_handle, PickObject::Result::BUSY, "pick server is busy");
+      return;
+    }
+    std::lock_guard<std::mutex> lock(execution_thread_mutex_);
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
+    execution_thread_ = std::thread([this, goal_handle]() {
+      try {
+        execute(goal_handle);
+      } catch (const std::exception & error) {
+        abort(goal_handle, PickObject::Result::INTERNAL_ERROR,
+          std::string("unhandled pick exception: ") + error.what());
+      } catch (...) {
+        abort(goal_handle, PickObject::Result::INTERNAL_ERROR, "unhandled pick exception");
+      }
       busy_ = false;
-    }).detach();
+    });
   }
 
   void feedback(
@@ -255,12 +297,77 @@ private:
     handle->abort(result);
   }
 
+  class PickTiming
+  {
+  public:
+    explicit PickTiming(const rclcpp::Logger & logger)
+    : logger_(logger),
+      started_(std::chrono::steady_clock::now()),
+      last_(started_)
+    {
+    }
+
+    void mark(const std::string & stage)
+    {
+      const auto now = std::chrono::steady_clock::now();
+      const double stage_seconds = std::chrono::duration<double>(now - last_).count();
+      const double total_seconds = std::chrono::duration<double>(now - started_).count();
+      last_ = now;
+      entries_.push_back({stage, stage_seconds, total_seconds});
+      RCLCPP_INFO(
+        logger_, "pick timing %-24s stage=%.3fs total=%.3fs",
+        stage.c_str(), stage_seconds, total_seconds);
+    }
+
+    std::string summary() const
+    {
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(2);
+      for (size_t i = 0; i < entries_.size(); ++i) {
+        if (i > 0) {
+          out << ", ";
+        }
+        out << entries_[i].stage << "=" << entries_[i].stage_seconds << "s";
+      }
+      if (!entries_.empty()) {
+        out << ", total=" << entries_.back().total_seconds << "s";
+      }
+      return out.str();
+    }
+
+  private:
+    struct Entry
+    {
+      std::string stage;
+      double stage_seconds;
+      double total_seconds;
+    };
+
+    rclcpp::Logger logger_;
+    std::chrono::steady_clock::time_point started_;
+    std::chrono::steady_clock::time_point last_;
+    std::vector<Entry> entries_;
+  };
+
   static double detectionScore(const smart_grasp_interfaces::msg::DetectedObject & object)
   {
     return object.confidence + 0.25 * object.depth_valid_ratio + (object.stable ? 0.20 : 0.0);
   }
 
-  std::vector<smart_grasp_interfaces::msg::DetectedObject> currentDetections(
+  void pruneDetectionsLocked(const rclcpp::Time & now)
+  {
+    const double max_age = get_parameter("target_max_age").as_double();
+    for (auto it = detections_.begin(); it != detections_.end();) {
+      const double age = (now - rclcpp::Time(it->second.header.stamp)).seconds();
+      if (!std::isfinite(age) || age < -max_age || age > max_age) {
+        it = detections_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  std::vector<smart_grasp_interfaces::msg::DetectedObject> currentDetectionsLocked(
     const std::string & target_class,
     const std::optional<uint32_t> target_track_id = std::nullopt,
     const std::optional<rclcpp::Time> minimum_stamp = std::nullopt)
@@ -268,7 +375,7 @@ private:
     std::vector<smart_grasp_interfaces::msg::DetectedObject> current;
     const auto now = get_clock()->now();
     const double max_age = get_parameter("target_max_age").as_double();
-    std::lock_guard<std::mutex> lock(data_mutex_);
+    pruneDetectionsLocked(now);
     for (const auto & entry : detections_) {
       const auto & object = entry.second;
       const double age = (now - rclcpp::Time(object.header.stamp)).seconds();
@@ -286,6 +393,15 @@ private:
     return current;
   }
 
+  std::vector<smart_grasp_interfaces::msg::DetectedObject> currentDetections(
+    const std::string & target_class,
+    const std::optional<uint32_t> target_track_id = std::nullopt,
+    const std::optional<rclcpp::Time> minimum_stamp = std::nullopt)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return currentDetectionsLocked(target_class, target_track_id, minimum_stamp);
+  }
+
   std::vector<smart_grasp_interfaces::msg::DetectedObject> waitForCurrentDetections(
     const std::string & target_class,
     const std::optional<uint32_t> target_track_id = std::nullopt,
@@ -296,21 +412,20 @@ private:
       get_parameter(
         require_stable ? "stable_detection_wait_timeout" : "detection_wait_timeout").as_double());
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (true) {
-      auto current = currentDetections(target_class, target_track_id, minimum_stamp);
-      const bool ready = !current.empty() &&
+    std::vector<smart_grasp_interfaces::msg::DetectedObject> current;
+    const auto ready = [&]() {
+      current = currentDetectionsLocked(target_class, target_track_id, minimum_stamp);
+      return !current.empty() &&
         (!require_stable || std::any_of(current.begin(), current.end(), [](const auto & object) {
           return object.stable && object.rejection_reason.empty();
         }));
-      if (ready) {
-        return current;
-      }
-      std::unique_lock<std::mutex> lock(data_mutex_);
-      if (detection_condition_.wait_until(lock, deadline) == std::cv_status::timeout) {
-        lock.unlock();
-        return currentDetections(target_class, target_track_id, minimum_stamp);
-      }
+    };
+    std::unique_lock<std::mutex> lock(data_mutex_);
+    if (ready()) {
+      return current;
     }
+    detection_condition_.wait_until(lock, deadline, ready);
+    return current;
   }
 
   static geometry_msgs::msg::Pose makeGraspPose(
@@ -320,9 +435,10 @@ private:
     tf2::Quaternion object_q;
     tf2::fromMsg(object.pose.pose.orientation, object_q);
     tf2::Matrix3x3 object_rotation(object_q);
-    // The detector's object X axis is the short edge. In the Piper-X URDF the
-    // finger prismatic axes resolve to TCP X after the gripper's fixed yaw, so
-    // aligning TCP X with this edge makes the jaws close across 76.5 mm.
+    // The detector's object X axis is the chosen horizontal axis on the top
+    // face. In the Piper-X URDF the finger prismatic axes resolve to TCP X
+    // after the gripper's fixed yaw, so aligning TCP X with this axis keeps the
+    // jaws centered on the block face.
     tf2::Vector3 x_axis = object_rotation.getColumn(0);
     x_axis.setZ(0.0);
     x_axis.normalize();
@@ -667,7 +783,19 @@ private:
     target_shape.type = target_shape.BOX;
     target_shape.dimensions = {object.size.x, object.size.y, object.size.z};
     target.primitives.push_back(target_shape);
-    target.primitive_poses.push_back(object.pose.pose);
+    auto target_pose = object.pose.pose;
+    if (tableConfigured() && object.size.z > 0.0) {
+      const double clearance = std::max(0.0, get_parameter("target_table_clearance").as_double());
+      const double min_center_z =
+        get_parameter("table_height").as_double() + 0.5 * object.size.z + clearance;
+      if (target_pose.position.z < min_center_z) {
+        RCLCPP_WARN(get_logger(),
+          "raising target collision box from z=%.4f to %.4f to keep it above the table",
+          target_pose.position.z, min_center_z);
+        target_pose.position.z = min_center_z;
+      }
+    }
+    target.primitive_poses.push_back(target_pose);
     target.operation = target.ADD;
     objects.push_back(target);
     if (!planning_scene_interface_.applyCollisionObjects(objects)) {
@@ -687,7 +815,8 @@ private:
     goal.trajectory.joint_names = {"gripper"};
     trajectory_msgs::msg::JointTrajectoryPoint point;
     point.positions = {width};
-    point.time_from_start = rclcpp::Duration::from_seconds(1.0);
+    const double motion_time = std::max(0.1, get_parameter("gripper_motion_time").as_double());
+    point.time_from_start = rclcpp::Duration::from_seconds(motion_time);
     goal.trajectory.points.push_back(point);
     auto goal_future = gripper_client_->async_send_goal(goal);
     if (goal_future.wait_for(std::chrono::duration<double>(timeout)) != std::future_status::ready) {
@@ -702,7 +831,226 @@ private:
       gripper_client_->async_cancel_goal(handle);
       return false;
     }
-    return result_future.get().code == rclcpp_action::ResultCode::SUCCEEDED;
+    if (result_future.get().code != rclcpp_action::ResultCode::SUCCEEDED) {
+      return false;
+    }
+    if (get_parameter("simulation_mode").as_bool()) {
+      return true;
+    }
+    uint64_t feedback_sequence = 0;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      feedback_sequence = gripper_feedback_sequence_;
+    }
+    std::unique_lock<std::mutex> lock(data_mutex_);
+    return gripper_condition_.wait_for(
+      lock, std::chrono::duration<double>(get_parameter("gripper_timeout").as_double()),
+      [this, feedback_sequence]() {
+        return gripper_feedback_sequence_ > feedback_sequence;
+      });
+  }
+
+  bool executeArmTrajectory(const moveit_msgs::msg::RobotTrajectory & trajectory)
+  {
+    if (trajectory.joint_trajectory.points.empty()) {
+      return false;
+    }
+    const double timeout = get_parameter("execution_settle_timeout").as_double();
+    if (!arm_client_->wait_for_action_server(std::chrono::duration<double>(timeout))) {
+      RCLCPP_ERROR(get_logger(), "arm trajectory action server is unavailable");
+      return false;
+    }
+    FollowJointTrajectory::Goal goal;
+    goal.trajectory = trajectory.joint_trajectory;
+    auto goal_future = arm_client_->async_send_goal(goal);
+    if (goal_future.wait_for(std::chrono::duration<double>(timeout)) != std::future_status::ready) {
+      RCLCPP_ERROR(get_logger(), "timed out while sending arm trajectory goal");
+      return false;
+    }
+    auto handle = goal_future.get();
+    if (!handle) {
+      RCLCPP_ERROR(get_logger(), "arm trajectory goal was rejected");
+      return false;
+    }
+    auto result_future = arm_client_->async_get_result(handle);
+    if (result_future.wait_for(std::chrono::duration<double>(timeout)) != std::future_status::ready) {
+      arm_client_->async_cancel_goal(handle);
+      RCLCPP_ERROR(get_logger(), "timed out while waiting for arm trajectory result");
+      return false;
+    }
+    if (result_future.get().code != rclcpp_action::ResultCode::SUCCEEDED) {
+      RCLCPP_ERROR(get_logger(), "arm trajectory action did not succeed");
+      return false;
+    }
+    return true;
+  }
+
+  bool waitForJointTarget(
+    const std::vector<std::string> & names, const std::vector<double> & target,
+    double tolerance, double timeout_seconds)
+  {
+    if (names.size() != target.size() || names.empty()) {
+      return false;
+    }
+    const auto reached = [this, &names, &target, tolerance]() {
+      std::map<std::string, double> actual;
+      for (size_t i = 0; i < latest_joints_.name.size() &&
+        i < latest_joints_.position.size(); ++i)
+      {
+        actual[latest_joints_.name[i]] = latest_joints_.position[i];
+      }
+      for (size_t i = 0; i < names.size(); ++i) {
+        const auto found = actual.find(names[i]);
+        if (found == actual.end() || std::abs(found->second - target[i]) > tolerance) {
+          return false;
+        }
+      }
+      return true;
+    };
+    std::unique_lock<std::mutex> lock(data_mutex_);
+    return joint_condition_.wait_for(
+      lock, std::chrono::duration<double>(timeout_seconds), reached);
+  }
+
+  bool moveToObservationWithMoveIt()
+  {
+    if (!applyEnvironmentScene()) {
+      RCLCPP_ERROR(get_logger(),
+        "failed to update the environment before observation motion");
+      return false;
+    }
+    moveit::planning_interface::MoveGroupInterface::Plan observation_plan;
+    move_group_->setStartStateToCurrentState();
+    const auto observation = get_parameter("observation_joint_positions").as_double_array();
+    if (!move_group_->setJointValueTarget(std::vector<double>(
+        observation.begin(), observation.end())) ||
+      move_group_->plan(observation_plan) != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_ERROR(get_logger(), "no collision-free plan to the observation pose");
+      return false;
+    }
+    if (hasWristJump(observation_plan.trajectory_)) {
+      RCLCPP_ERROR(get_logger(), "observation trajectory contains a wrist jump");
+      return false;
+    }
+    if (!startStateMatches(observation_plan.trajectory_)) {
+      RCLCPP_ERROR(get_logger(),
+        "observation plan start differs from real joint feedback");
+      return false;
+    }
+    if (!executeArmTrajectory(observation_plan.trajectory_) ||
+      !waitForTrajectoryEnd(observation_plan.trajectory_))
+    {
+      RCLCPP_ERROR(get_logger(), "planned arm trajectory did not reach the observation pose");
+      return false;
+    }
+    return true;
+  }
+
+  bool jointTargetConfigured(const std::string & parameter_name) const
+  {
+    const auto positions = get_parameter(parameter_name).as_double_array();
+    const auto names = move_group_->getJointNames();
+    return positions.size() == names.size() &&
+           std::all_of(positions.begin(), positions.end(), [](double value) {
+             return std::isfinite(value);
+           });
+  }
+
+  bool moveToConfiguredJointTargetWithMoveIt(
+    const std::string & positions_parameter,
+    const std::string & tolerance_parameter,
+    const std::string & target_label)
+  {
+    const auto names = move_group_->getJointNames();
+    const auto configured_target = get_parameter(positions_parameter).as_double_array();
+    auto target = std::vector<double>(configured_target.begin(), configured_target.end());
+    if (target.size() != names.size()) {
+      RCLCPP_ERROR(get_logger(),
+        "%s must match the planning group joint count", positions_parameter.c_str());
+      return false;
+    }
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    move_group_->setStartStateToCurrentState();
+    if (!move_group_->setJointValueTarget(target) ||
+      move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_ERROR(get_logger(), "no collision-free plan to the %s pose", target_label.c_str());
+      return false;
+    }
+    if (hasWristJump(plan.trajectory_)) {
+      RCLCPP_ERROR(get_logger(), "%s trajectory contains a wrist jump", target_label.c_str());
+      return false;
+    }
+    if (!startStateMatches(plan.trajectory_)) {
+      RCLCPP_ERROR(get_logger(), "%s plan start differs from real joint feedback",
+        target_label.c_str());
+      return false;
+    }
+    if (!executeArmTrajectory(plan.trajectory_) ||
+      !waitForJointTarget(
+        names, target, get_parameter(tolerance_parameter).as_double(),
+        get_parameter("execution_settle_timeout").as_double()))
+    {
+      RCLCPP_ERROR(get_logger(), "real joints did not reach the %s pose", target_label.c_str());
+      return false;
+    }
+    return true;
+  }
+
+  bool moveToPostPickWithMoveIt()
+  {
+    return moveToConfiguredJointTargetWithMoveIt(
+      "post_pick_joint_positions", "post_pick_joint_tolerance", "post-pick");
+  }
+
+  bool moveToPostPickFinalWithMoveIt()
+  {
+    return moveToConfiguredJointTargetWithMoveIt(
+      "post_pick_final_joint_positions", "post_pick_final_joint_tolerance", "post-pick-final");
+  }
+
+  bool moveToPostPickSequence(
+    const std::shared_ptr<GoalHandle> & handle, uint32_t count,
+    const std::string & reason)
+  {
+    feedback(handle, "MOVE_TO_POST_PICK", reason + "; moving to configured post-pick pose", count);
+    if (!moveToPostPickWithMoveIt()) {
+      return false;
+    }
+    if (jointTargetConfigured("post_pick_final_joint_positions")) {
+      feedback(handle, "MOVE_TO_POST_PICK_FINAL",
+        reason + "; moving from post-pick pose to configured final pose", count);
+      if (!moveToPostPickFinalWithMoveIt()) {
+        return false;
+      }
+    }
+    move_group_->setStartStateToCurrentState();
+    return true;
+  }
+
+  void abortAfterGraspMotion(
+    const std::shared_ptr<GoalHandle> & handle, uint16_t code,
+    const std::string & message,
+    const smart_grasp_interfaces::msg::DetectedObject & object,
+    uint32_t count)
+  {
+    clearTargetFromPlanningScene();
+    std::string final_message = message;
+    if (moveToPostPickSequence(handle, count, "grasp failed")) {
+      final_message += "; moved to configured post-pick sequence";
+    } else {
+      final_message += "; failed to move to configured post-pick sequence";
+    }
+    abort(handle, code, final_message, &object);
+  }
+
+  void clearTargetFromPlanningScene()
+  {
+    if (move_group_) {
+      move_group_->detachObject("smart_grasp_target");
+    }
+    planning_scene_interface_.removeCollisionObjects({"smart_grasp_target"});
   }
 
   bool gripperHealthy(double * width = nullptr) const
@@ -732,9 +1080,58 @@ private:
     std::vector<geometry_msgs::msg::Pose> waypoints{target};
     *fraction = move_group_->computeCartesianPath(
       waypoints, get_parameter("cartesian_step").as_double(), 0.0, trajectory, true);
-    return smart_grasp_moveit::cartesianCandidateAccepted(
-      *fraction, get_parameter("cartesian_min_fraction").as_double(),
-      hasWristJump(trajectory));
+    if (!smart_grasp_moveit::cartesianCandidateAccepted(
+        *fraction, get_parameter("cartesian_min_fraction").as_double(),
+        hasWristJump(trajectory)))
+    {
+      return false;
+    }
+    return retimeCartesianTrajectory(trajectory);
+  }
+
+  double scalingParameter(const std::string & parameter_name, const std::string & fallback_name) const
+  {
+    double value = get_parameter(parameter_name).as_double();
+    if (!std::isfinite(value) || value <= 0.0) {
+      value = get_parameter(fallback_name).as_double();
+    }
+    if (!std::isfinite(value) || value <= 0.0) {
+      return 0.1;
+    }
+    return std::clamp(value, 0.01, 1.0);
+  }
+
+  bool retimeCartesianTrajectory(moveit_msgs::msg::RobotTrajectory & trajectory)
+  {
+    if (!get_parameter("time_parameterize_cartesian").as_bool() ||
+      trajectory.joint_trajectory.points.size() < 2)
+    {
+      return true;
+    }
+    auto reference_state = move_group_->getCurrentState(2.0);
+    if (!reference_state) {
+      RCLCPP_ERROR(get_logger(), "failed to read current robot state for Cartesian retiming");
+      return false;
+    }
+    robot_trajectory::RobotTrajectory robot_trajectory(
+      move_group_->getRobotModel(), get_parameter("planning_group").as_string());
+    robot_trajectory.setRobotTrajectoryMsg(*reference_state, trajectory);
+
+    trajectory_processing::IterativeParabolicTimeParameterization time_parameterization;
+    const double velocity_scaling = scalingParameter(
+      "cartesian_velocity_scaling", "velocity_scaling");
+    const double acceleration_scaling = scalingParameter(
+      "cartesian_acceleration_scaling", "acceleration_scaling");
+    if (!time_parameterization.computeTimeStamps(
+        robot_trajectory, velocity_scaling, acceleration_scaling))
+    {
+      RCLCPP_ERROR(get_logger(),
+        "failed to time-parameterize Cartesian trajectory with velocity=%.3f acceleration=%.3f",
+        velocity_scaling, acceleration_scaling);
+      return false;
+    }
+    robot_trajectory.getRobotTrajectoryMsg(trajectory);
+    return true;
   }
 
   void setStartFromTrajectory(const moveit_msgs::msg::RobotTrajectory & trajectory)
@@ -754,6 +1151,7 @@ private:
   {
     const auto goal = handle->get_goal();
     const bool do_execute = goal->execute;
+    PickTiming timing(get_logger());
     if (!observationConfigured()) {
       abort(handle, PickObject::Result::INTERNAL_ERROR,
         "observation_joint_positions must match the planning group joint count");
@@ -795,55 +1193,70 @@ private:
           "plan-only requires the real arm at the configured observation pose");
         return;
       }
-      feedback(handle, "MOVE_TO_OBSERVE", "planning configured observation pose", 0);
-      if (!applyEnvironmentScene()) {
-        abort(handle, PickObject::Result::PLANNING_FAILED,
-          "failed to update the environment before observation motion");
-        return;
+      if (!get_parameter("simulation_mode").as_bool()) {
+        feedback(handle, "MOVE_TO_OBSERVE", "moving to observation pose with planned arm trajectory", 0);
+        if (!moveToObservationWithMoveIt()) {
+          abort(handle, PickObject::Result::START_STATE_MISMATCH,
+            "planned arm trajectory did not reach the configured observation pose");
+          return;
+        }
+        std::this_thread::sleep_for(500ms);
+        move_group_->setStartStateToCurrentState();
+      } else {
+        feedback(handle, "MOVE_TO_OBSERVE", "planning configured observation pose", 0);
+        if (!applyEnvironmentScene()) {
+          abort(handle, PickObject::Result::PLANNING_FAILED,
+            "failed to update the environment before observation motion");
+          return;
+        }
+        moveit::planning_interface::MoveGroupInterface::Plan observation_plan;
+        move_group_->setStartStateToCurrentState();
+        const auto observation = get_parameter("observation_joint_positions").as_double_array();
+        if (!move_group_->setJointValueTarget(std::vector<double>(
+            observation.begin(), observation.end())) ||
+          move_group_->plan(observation_plan) != moveit::core::MoveItErrorCode::SUCCESS)
+        {
+          abort(handle, PickObject::Result::PLANNING_FAILED,
+            "no collision-free plan to the observation pose");
+          return;
+        }
+        if (hasWristJump(observation_plan.trajectory_)) {
+          abort(handle, PickObject::Result::WRIST_JUMP,
+            "observation trajectory contains a wrist jump");
+          return;
+        }
+        if (!startStateMatches(observation_plan.trajectory_)) {
+          abort(handle, PickObject::Result::START_STATE_MISMATCH,
+            "observation plan start differs from real joint feedback");
+          return;
+        }
+        feedback(handle, "EXEC_OBSERVE", "executing configured observation pose", 0);
+        if (!executeArmTrajectory(observation_plan.trajectory_) ||
+          !waitForTrajectoryEnd(observation_plan.trajectory_))
+        {
+          abort(handle, PickObject::Result::START_STATE_MISMATCH,
+            "real joints did not reach the observation pose");
+          return;
+        }
+        std::this_thread::sleep_for(500ms);
+        move_group_->setStartStateToCurrentState();
       }
-      moveit::planning_interface::MoveGroupInterface::Plan observation_plan;
-      move_group_->setStartStateToCurrentState();
-      const auto observation = get_parameter("observation_joint_positions").as_double_array();
-      if (!move_group_->setJointValueTarget(std::vector<double>(
-          observation.begin(), observation.end())) ||
-        move_group_->plan(observation_plan) != moveit::core::MoveItErrorCode::SUCCESS)
-      {
-        abort(handle, PickObject::Result::PLANNING_FAILED,
-          "no collision-free plan to the observation pose");
-        return;
-      }
-      if (hasWristJump(observation_plan.trajectory_)) {
-        abort(handle, PickObject::Result::WRIST_JUMP,
-          "observation trajectory contains a wrist jump");
-        return;
-      }
-      if (!startStateMatches(observation_plan.trajectory_)) {
-        abort(handle, PickObject::Result::START_STATE_MISMATCH,
-          "observation plan start differs from real joint feedback");
-        return;
-      }
-      feedback(handle, "EXEC_OBSERVE", "executing configured observation pose", 0);
-      if (move_group_->execute(observation_plan) != moveit::core::MoveItErrorCode::SUCCESS ||
-        !waitForTrajectoryEnd(observation_plan.trajectory_))
-      {
-        abort(handle, PickObject::Result::START_STATE_MISMATCH,
-          "real joints did not reach the observation pose");
-        return;
-      }
-      std::this_thread::sleep_for(500ms);
-      move_group_->setStartStateToCurrentState();
     } else {
       feedback(handle, "MOVE_TO_OBSERVE", "real arm is already at the observation pose", 0);
     }
+    timing.mark("observe");
     if (canceled(handle)) {return;}
     feedback(handle, "DETECT", "waiting for a fresh stable target", 0);
+    const std::string default_target_class = get_parameter("target_class").as_string();
+    const std::string target_class =
+      goal->target_class.empty() ? default_target_class : goal->target_class;
     auto detections = waitForCurrentDetections(
-      goal->target_class.empty() ? "blue_block" : goal->target_class,
-      std::nullopt, true);
+      target_class, std::nullopt, true);
     if (detections.empty()) {
       abort(handle, PickObject::Result::NO_TARGET, "no fresh target detection");
       return;
     }
+    timing.mark("detect");
     feedback(handle, "VALIDATE_DEPTH_AND_POSE", "checking rejection and stability", detections.size());
     auto valid = std::vector<smart_grasp_interfaces::msg::DetectedObject>();
     for (const auto & detection : detections) {
@@ -879,6 +1292,7 @@ private:
         "failed to update the MoveIt planning scene", &object);
       return;
     }
+    timing.mark("scene");
     feedback(handle, "GENERATE_CANDIDATES", "generating two 180-degree top grasps", 2);
     const auto offset = get_parameter("tcp_to_grasp_xyz").as_double_array();
     std::vector<Candidate> candidates;
@@ -945,6 +1359,7 @@ private:
         "no collision-free pregrasp plan", &object);
       return;
     }
+    timing.mark("plan_pregrasp");
     std::sort(candidates.begin(), candidates.end(), [](const auto & left, const auto & right) {
       return left.score > right.score;
     });
@@ -964,7 +1379,8 @@ private:
           "failed to open gripper before pregrasp", &object);
         return;
       }
-      if (move_group_->execute(selected.plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      timing.mark("open_gripper");
+      if (!executeArmTrajectory(selected.plan.trajectory_)) {
         abort(handle, PickObject::Result::PLANNING_FAILED,
           "pregrasp trajectory execution failed", &object);
         return;
@@ -979,6 +1395,7 @@ private:
       std::this_thread::sleep_for(500ms);
       move_group_->setStartStateToCurrentState();
       reobserve_after = get_clock()->now();
+      timing.mark("exec_pregrasp");
     } else {
       setStartFromTrajectory(selected.plan.trajectory_);
     }
@@ -996,11 +1413,26 @@ private:
         return item.track_id == object.track_id && item.stable && item.rejection_reason.empty();
       });
       if (same_track == refreshed.end()) {
-        abort(handle, PickObject::Result::STALE_TARGET,
-          "target was not stable after reaching pregrasp", &object);
-        return;
+        if (get_parameter("allow_reobserve_fallback").as_bool()) {
+          // YOLO-based picking: trust the observation-pose locked target and
+          // proceed to the grasp even if the pregrasp top-down view does not
+          // reacquire the same track.
+          feedback(handle, "REOBSERVE_FALLBACK",
+            "reobservation not reacquired; using locked observation pose", candidates.size());
+        } else {
+          abort(handle, PickObject::Result::STALE_TARGET,
+            "target was not stable after reaching pregrasp", &object);
+          return;
+        }
       }
-      if (reobserve_mode == "validate_only") {
+      // When allow_reobserve_fallback fired above, same_track == refreshed.end()
+      // and we must NOT dereference it. Keep the observation-pose-locked grasp
+      // (selected already holds object + its grasp) and skip validate/update.
+      if (same_track == refreshed.end()) {
+        // Fallback already logged REOBSERVE_FALLBACK above; keep the
+        // observation-pose-locked grasp (selected holds object + its grasp)
+        // and skip validate/update to avoid dereferencing the end iterator.
+      } else if (reobserve_mode == "validate_only") {
         const auto delta = smart_grasp_moveit::poseDelta(
           object.pose.pose, same_track->pose.pose);
         if (!smart_grasp_moveit::poseDeltaAccepted(
@@ -1028,6 +1460,7 @@ private:
         }
       }
     }
+    timing.mark("reobserve");
     moveit_msgs::msg::RobotTrajectory approach;
     double approach_fraction = 0.0;
     feedback(handle, "CARTESIAN_APPROACH", "planning 5 mm Cartesian approach", candidates.size());
@@ -1036,7 +1469,8 @@ private:
         "Cartesian approach fraction=" + std::to_string(approach_fraction), &object);
       return;
     }
-    if (do_execute && move_group_->execute(approach) != moveit::core::MoveItErrorCode::SUCCESS) {
+    timing.mark("plan_approach");
+    if (do_execute && !executeArmTrajectory(approach)) {
       abort(handle, PickObject::Result::PLANNING_FAILED, "Cartesian approach execution failed", &object);
       return;
     }
@@ -1048,6 +1482,7 @@ private:
           "real joints did not reach the Cartesian approach endpoint", &object);
         return;
       }
+      timing.mark("exec_approach");
     }
     if (!do_execute) {
       setStartFromTrajectory(approach);
@@ -1058,25 +1493,35 @@ private:
       const double close_width = get_parameter("simulation_mode").as_bool() ?
         std::min(object.size.x, object.size.y) : get_parameter("gripper_close").as_double();
       if (!commandGripper(close_width)) {
-        abort(handle, PickObject::Result::GRIPPER_FAULT, "gripper command failed", &object);
+        abortAfterGraspMotion(
+          handle, PickObject::Result::GRIPPER_FAULT,
+          "gripper command failed", object, candidates.size());
         return;
       }
+      timing.mark("close_gripper");
       feedback(handle, "VERIFY_CONTACT", "checking gripper feedback width and faults", candidates.size());
       if (!gripperHealthy(&contact_width)) {
-        abort(handle, PickObject::Result::GRIPPER_FAULT, "gripper feedback reports a fault", &object);
+        abortAfterGraspMotion(
+          handle, PickObject::Result::GRIPPER_FAULT,
+          "gripper feedback reports a fault", object, candidates.size());
         return;
       }
-      if (contact_width < get_parameter("contact_width_min").as_double() ||
-        contact_width > get_parameter("contact_width_max").as_double())
+      const double contact_width_min = get_parameter("contact_width_min").as_double();
+      const double contact_width_max = get_parameter("contact_width_max").as_double();
+      if (contact_width < contact_width_min || contact_width > contact_width_max)
       {
-        abort(handle, PickObject::Result::CONTACT_NOT_DETECTED,
-          "gripper width is outside the contact interval", &object);
+        abortAfterGraspMotion(
+          handle, PickObject::Result::CONTACT_NOT_DETECTED,
+          "gripper width " + std::to_string(contact_width) +
+          " is outside the contact interval [" + std::to_string(contact_width_min) +
+          ", " + std::to_string(contact_width_max) + "]", object, candidates.size());
         return;
       }
       feedback(handle, "ATTACH_OBJECT", "attaching target to gripper", candidates.size());
       move_group_->attachObject(
         "smart_grasp_target", "gripper_base", {"gripper_link1", "gripper_link2"});
       move_group_->setStartStateToCurrentState();
+      timing.mark("verify_attach");
     }
     geometry_msgs::msg::Pose lift = selected.grasp;
     lift.position.z += get_parameter("lift_height").as_double();
@@ -1084,29 +1529,61 @@ private:
     double lift_fraction = 0.0;
     feedback(handle, "CARTESIAN_LIFT", "planning 50 mm vertical lift", candidates.size());
     if (!planCartesian(lift, lift_trajectory, &lift_fraction)) {
-      abort(handle, PickObject::Result::CARTESIAN_INCOMPLETE,
-        "Cartesian lift fraction=" + std::to_string(lift_fraction), &object);
+      if (do_execute) {
+        abortAfterGraspMotion(
+          handle, PickObject::Result::CARTESIAN_INCOMPLETE,
+          "Cartesian lift fraction=" + std::to_string(lift_fraction), object, candidates.size());
+      } else {
+        abort(handle, PickObject::Result::CARTESIAN_INCOMPLETE,
+          "Cartesian lift fraction=" + std::to_string(lift_fraction), &object);
+      }
       return;
     }
-    if (do_execute && move_group_->execute(lift_trajectory) != moveit::core::MoveItErrorCode::SUCCESS) {
-      abort(handle, PickObject::Result::PLANNING_FAILED, "lift execution failed", &object);
+    timing.mark("plan_lift");
+    if (do_execute && !executeArmTrajectory(lift_trajectory)) {
+      abortAfterGraspMotion(
+        handle, PickObject::Result::PLANNING_FAILED,
+        "lift execution failed", object, candidates.size());
       return;
     }
     if (do_execute) {
       feedback(handle, "WAIT_LIFT_SETTLE",
         "waiting for real joint feedback after lift", candidates.size());
       if (!waitForTrajectoryEnd(lift_trajectory)) {
-        abort(handle, PickObject::Result::START_STATE_MISMATCH,
-          "real joints did not reach the lift trajectory endpoint", &object);
+        abortAfterGraspMotion(
+          handle, PickObject::Result::START_STATE_MISMATCH,
+          "real joints did not reach the lift trajectory endpoint", object, candidates.size());
         return;
       }
+      timing.mark("exec_lift");
+      clearTargetFromPlanningScene();
+      if (!moveToPostPickSequence(handle, candidates.size(), "object lifted")) {
+        abort(handle, PickObject::Result::PLANNING_FAILED,
+          "planned arm trajectory did not reach the configured post-pick sequence", &object);
+        return;
+      }
+      timing.mark("move_post_pick");
+      feedback(handle, "OPEN_GRIPPER_AT_PLACE",
+        "opening gripper after reaching the configured post-pick sequence", candidates.size());
+      if (!commandGripper(get_parameter("gripper_open").as_double())) {
+        abort(handle, PickObject::Result::GRIPPER_FAULT,
+          "failed to open gripper after reaching the configured post-pick sequence", &object);
+        return;
+      }
+      timing.mark("release_gripper");
     }
-    feedback(handle, "DONE", do_execute ? "object lifted" : "all paths planned without execution",
+    const auto timing_summary = timing.summary();
+    RCLCPP_INFO(get_logger(), "pick timing summary: %s", timing_summary.c_str());
+    feedback(handle, "DONE",
+      do_execute ? "object released at configured post-pick sequence" :
+      "all paths planned without execution",
       candidates.size());
     auto result = std::make_shared<PickObject::Result>();
     result->success = true;
     result->error_code = PickObject::Result::OK;
-    result->message = do_execute ? "pick completed" : "plan-only completed";
+    result->message = do_execute ?
+      "pick completed and released at configured post-pick sequence; timing: " + timing_summary :
+      "plan-only completed; timing: " + timing_summary;
     result->object_pose.header = object.header;
     result->object_pose.pose = object.pose.pose;
     result->grasp_pose.header = object.header;
@@ -1121,14 +1598,18 @@ private:
   std::condition_variable detection_condition_;
   std::condition_variable joint_condition_;
   std::condition_variable gripper_condition_;
+  std::mutex execution_thread_mutex_;
+  std::thread execution_thread_;
   std::map<uint32_t, smart_grasp_interfaces::msg::DetectedObject> detections_;
   sensor_msgs::msg::JointState latest_joints_;
   agx_arm_msgs::msg::GripperStatus latest_gripper_;
   bool have_gripper_{false};
+  uint64_t gripper_feedback_sequence_{0};
   rclcpp::Subscription<smart_grasp_interfaces::msg::DetectedObject>::SharedPtr detection_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
   rclcpp::Subscription<agx_arm_msgs::msg::GripperStatus>::SharedPtr gripper_sub_;
   rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr planning_scene_client_;
+  rclcpp_action::Client<FollowJointTrajectory>::SharedPtr arm_client_;
   rclcpp_action::Client<FollowJointTrajectory>::SharedPtr gripper_client_;
   rclcpp_action::Server<PickObject>::SharedPtr action_server_;
   std::unique_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;

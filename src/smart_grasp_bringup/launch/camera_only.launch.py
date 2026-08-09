@@ -4,7 +4,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -22,30 +22,41 @@ def generate_launch_description():
     open_gui = LaunchConfiguration("open_gui")
     perception_config = LaunchConfiguration("perception_config")
     color_profile = LaunchConfiguration("color_profile")
+    camera_serial_no = LaunchConfiguration("camera_serial_no")
 
-    camera_launch = GroupAction(
-        scoped=True,
-        forwarding=False,
-        launch_configurations={"color_profile": color_profile},
-        condition=IfCondition(use_camera),
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(os.path.join(
-                    get_package_share_directory("realsense2_camera"),
-                    "launch", "rs_launch.py")),
-                launch_arguments={
-                    "camera_namespace": "camera",
-                    "camera_name": "camera",
-                    "align_depth.enable": "false",
-                    "enable_color": "true",
-                    "enable_depth": "false",
-                    "pointcloud.enable": "false",
-                    "rgb_camera.color_profile": LaunchConfiguration("color_profile"),
-                    "depth_module.color_profile": LaunchConfiguration("color_profile"),
-                }.items(),
+    def quote_serial_no(context):
+        serial = camera_serial_no.perform(context)
+        if serial.startswith("'") and serial.endswith("'"):
+            return serial
+        return f"'{serial}'"
+
+    def launch_camera(context, *args, **kwargs):
+        return [
+            GroupAction(
+                scoped=True,
+                forwarding=False,
+                launch_configurations={"color_profile": color_profile},
+                condition=IfCondition(use_camera),
+                actions=[
+                    IncludeLaunchDescription(
+                        PythonLaunchDescriptionSource(os.path.join(
+                            get_package_share_directory("realsense2_camera"),
+                            "launch", "rs_launch.py")),
+                        launch_arguments={
+                            "camera_namespace": "camera",
+                            "camera_name": "camera",
+                            "serial_no": quote_serial_no(context),
+                            "align_depth.enable": "false",
+                            "enable_color": "true",
+                            "enable_depth": "false",
+                            "pointcloud.enable": "false",
+                            "rgb_camera.color_profile": LaunchConfiguration("color_profile"),
+                            "depth_module.color_profile": LaunchConfiguration("color_profile"),
+                        }.items(),
+                    )
+                ],
             )
-        ],
-    )
+        ]
 
     return LaunchDescription([
         DeclareLaunchArgument("use_camera", default_value="true"),
@@ -59,8 +70,13 @@ def generate_launch_description():
             default_value="640x480x30",
             description="D405 color stream profile: WIDTHxHEIGHTxFPS",
         ),
+        DeclareLaunchArgument(
+            "camera_serial_no",
+            default_value="260322272696",
+            description="D405 serial number used to pin the camera node.",
+        ),
         DeclareLaunchArgument("open_gui", default_value="false"),
-        camera_launch,
+        OpaqueFunction(function=launch_camera),
         Node(
             package="smart_grasp",
             executable="detector_node",

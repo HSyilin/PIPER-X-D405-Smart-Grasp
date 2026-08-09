@@ -17,12 +17,23 @@ smart_grasp_pick_server:
     cartesian_step: 0.005
     cartesian_min_fraction: 0.95
     start_joint_tolerance: 0.05
+    # Site-specific six-joint observation pose used after /move_home.
+    observation_joint_positions: [-1.560708324, 1.875757707, -1.251889766, 0.776078105, 0.0, -0.005742133]
+    observation_joint_tolerance: 0.02
+    # Intermediate pose used after a successful pick. It is not the official
+    # /move_home pose.
+    post_pick_joint_positions: [-1.583554684, 0.186139365, -0.379190233, 0.550424486, -0.055798176, 0.0]
+    post_pick_joint_tolerance: 0.05
+    # Optional final pose after the intermediate post-pick pose. Leave empty to
+    # stop at post_pick_joint_positions.
+    post_pick_final_joint_positions: [-0.034924038, 0.366536596, -0.541017162, 1.152074386, 0.019024089, 0.0]
+    post_pick_final_joint_tolerance: 0.05
     wrist_jump_threshold: 0.5
-    gripper_open: 0.055
-    gripper_close: 0.0
+    gripper_open: 0.090
+    gripper_close: 0.050
     gripper_force: 0.5
-    contact_width_min: 0.032
-    contact_width_max: 0.048
+    contact_width_min: 0.052
+    contact_width_max: 0.068
     gripper_timeout: 3.0
     gripper_action: /gripper_controller/follow_joint_trajectory
     joint_state_topic: /feedback/joint_states
@@ -30,3 +41,22 @@ smart_grasp_pick_server:
     table_height: -999.0
     table_size: [0.0, 0.0, 0.0]
     table_center_xy: [0.0, 0.0]
+    target_table_clearance: 0.001
+    # ---- Static obstacles fixed relative to base_link ----
+    # Radar mast + main controller live next to the arm and must be avoided.
+    # Format per line (CSV, no spaces): id,size_x,size_y,size_z,pos_x,pos_y,pos_z
+    #   size = full box dimensions (m); pos = box CENTER in base_link (m).
+    # Coordinates are in base_frame. Tune these to the real geometry on site;
+    # the values below are conservative placeholders, not measurements.
+    static_obstacles: |
+      # radar_mast: tall pillar behind/next to the arm
+      radar_mast,0.20,0.20,0.90,0.00,-0.45,0.45
+      # main_controller: box at the controller bay
+      main_controller,0.30,0.25,0.30,0.35,0.00,0.15
+    # Hard planning bound in base_link so the arm never routes past the safe
+    # volume (keeps it away from radar/controller). Adjust to your envelope.
+    workspace: [-0.20, -0.70, -0.10, 0.90, 0.70, 1.20]
+    # Default pick target (merged from target_blue_block.yaml). Override per-run
+    # via ``target`` in your own grasp_config if you have multiple objects.
+    target_class: "1"
+    fixed_object_size: [0.060, 0.060, 0.040]

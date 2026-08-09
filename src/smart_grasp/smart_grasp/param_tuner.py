@@ -177,6 +177,9 @@ class Tuner(Node):
         fut = self.set_cli.call_async(req)
         rclpy.spin_until_future_complete(self, fut)
         res = fut.result()
+        if res is None:
+            print(f"  FAIL {name}: set_parameters returned no response")
+            return
         if res.results and res.results[0].successful:
             print(f"  OK  {name} = {value}")
         else:
@@ -201,6 +204,8 @@ def main(args=None):
         rclpy.init(args=args)
         tmp = Node("_tmp_lister")
         try:
+            for _ in range(3):
+                rclpy.spin_once(tmp, timeout_sec=0.2)
             names = tmp.get_node_names()
         finally:
             tmp.destroy_node()

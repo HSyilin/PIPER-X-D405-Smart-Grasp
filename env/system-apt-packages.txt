@@ -1,0 +1,16 @@
+# Ubuntu 22.04 packages expected on the destination machine.
+# ROS package names intentionally target the Humble distribution.
+python3-colcon-common-extensions
+python3-numpy
+python3-opencv
+python3-scipy
+python3-venv
+python3-yaml
+ros-humble-cv-bridge
+ros-humble-message-filters
+ros-humble-moveit
+ros-humble-realsense2-camera
+ros-humble-rosidl-default-generators
+ros-humble-rviz2
+ros-humble-sensor-msgs-py
+ros-humble-tf2-geometry-msgs

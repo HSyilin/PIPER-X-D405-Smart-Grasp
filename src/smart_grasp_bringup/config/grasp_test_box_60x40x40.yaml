@@ -1,0 +1,82 @@
+smart_grasp_pick_server:
+  ros__parameters:
+    planning_group: arm
+    base_frame: base_link
+    end_effector_link: tcp_link
+    planner_id: RRTConnectkConfigDefault
+    planning_time: 5.0
+    planning_attempts: 5
+    velocity_scaling: 0.02
+    acceleration_scaling: 0.02
+    execution_allowed: false
+    calibration_validated: false
+    target_max_age: 0.5
+    detection_wait_timeout: 1.0
+    stable_detection_wait_timeout: 3.0
+    ambiguity_score_gap: 0.10
+    pregrasp_distance: 0.120
+    grasp_depth: 0.020
+    lift_height: 0.050
+    tcp_to_grasp_xyz: [0.0, 0.0, 0.1425]
+    cartesian_step: 0.005
+    # Do not execute a trajectory that stops short of the grasp or lift pose.
+    cartesian_min_fraction: 1.0
+    time_parameterize_cartesian: false
+    # Cartesian approach/lift retiming. Keep these no higher than the global
+    # arm scaling while tuning; after contact verification is reliable, try
+    # velocity/acceleration 0.08 globally and 0.06 for Cartesian segments.
+    cartesian_velocity_scaling: 0.02
+    cartesian_acceleration_scaling: 0.02
+    validate_all_candidate_approaches: true
+    pregrasp_reobserve_mode: validate_only
+    # Widened 20260807: cross-view (side-locked -> top-down pregrasp) pose drift of
+    # a single static block was ~0.027m xy; 5mm gate wrongly aborted with STALE_TARGET.
+    # Validate-only mode keeps the observation-locked pose, just tolerates the noise.
+    reobserve_max_xy_shift: 0.04
+    reobserve_max_z_shift: 0.02
+    reobserve_max_axis_yaw_deg: 15.0
+    start_joint_tolerance: 0.05
+    # Wait for physical feedback after each FakeSystem trajectory completes.
+    execution_joint_tolerance: 0.03
+    execution_settle_timeout: 60.0
+    wrist_jump_threshold: 0.5
+    # Side-grasp observation pose. Recorded live from the teach pendant on
+    # 2026-08-06 (read back from /feedback/joint_states while the arm was parked
+    # at the taught pose). The planning group "arm" is the SRDF chain
+    # base_link->link6 and contains exactly 6 joints (joint1..joint6); the
+    # gripper is a separate joint and NOT part of the planning group, so this
+    # list must have 6 entries and no flange_joint.
+    observation_joint_positions: [-1.560708324, 1.875757707, -1.251889766, 0.776078105, 0.0, -0.005742133]
+    observation_joint_tolerance: 0.02
+    # Intermediate pose used after a successful pick. It is not the official
+    # /move_home pose.
+    post_pick_joint_positions: [-1.583554684, 0.186139365, -0.379190233, 0.550424486, -0.055798176, 0.0]
+    post_pick_joint_tolerance: 0.05
+    # Optional final pose after the intermediate post-pick pose. Fill this with
+    # the live /feedback/joint_states reading for the operator-taught pose.
+    post_pick_final_joint_positions: [-0.034924038, 0.366536596, -0.541017162, 1.152074386, 0.019024089, 0.0]
+    post_pick_final_joint_tolerance: 0.05
+    # Fixed temporary values for grasping the measured 60 x 40 x 40 mm block.
+    gripper_open: 0.090
+    gripper_close: 0.035
+    gripper_force: 0.5
+    gripper_motion_time: 1.0
+    # Accept either the 40 mm or 60 mm side after contact; an empty 35 mm close
+    # should still fail below this window.
+    contact_width_min: 0.036
+    contact_width_max: 0.066
+    gripper_timeout: 3.0
+    gripper_action: /gripper_controller/follow_joint_trajectory
+    joint_state_topic: /feedback/joint_states
+    target_class: "1"
+    # D405 depth check confirmed the support plane at z=-0.2268 in base_link.
+    # Sink the collision top by 3 mm to keep a numerical contact margin.
+    table_height: -0.2298
+    # This slab covers the target and direct grasp corridor only. Its dimensions
+    # are collision-model bounds, not a claim about the physical table edges.
+    table_size: [0.30, 0.30, 0.05]
+    table_center_xy: [0.103, -0.464]
+    target_table_clearance: 0.001
+    # The operator confirmed the direct arm-to-target path is clear for this test.
+    static_obstacles: ""
+    workspace: [-0.20, -0.70, -0.20, 0.90, 0.70, 1.20]

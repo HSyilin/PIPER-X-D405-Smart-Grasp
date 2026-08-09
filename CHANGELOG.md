@@ -11,6 +11,12 @@ cannot be reconstructed exactly from this repository.
 - Smart-grasp launches now lock remote arm-disable requests during observation
   and pick execution. Intentional shutdown must explicitly release the lock;
   closing the external trajectory gate continues to leave servo enable intact.
+- `smart_grasp_bringup` now leaves `home_joint_positions` empty by default, so
+  `/move_home` follows the official AGX all-zero home instead of the earlier
+  side-grasp home override. Observation joints were not changed.
+- `env/activate.sh` now prefers the built AGX install tree when present and
+  resolves AGX / `pyAgxArm` paths relative to the current workspace instead of
+  relying on hard-coded `/home/guest/...` entries.
 - Raised the camera-only default color profile from `424x240x30` to
   `640x480x30` and exposed `color_profile` as a launch argument.
 - At the project owner's direction, removed visual physical-size estimation,
@@ -21,11 +27,18 @@ cannot be reconstructed exactly from this repository.
 
 ### Documentation
 
+- Renamed the active measured-box profiles to `grasp_test_box_60x40x40.yaml`
+  and `perception_test_box_60x40x40.yaml`, renamed the standalone HSV detector
+  profile to `detector_hsv.yaml`, and documented the manual frame/ArUco
+  diagnostic scripts. Removed unreferenced local camera/simulation configs and
+  dated configuration snapshots; future snapshots are ignored by Git.
 - Added a complete, guarded commissioning procedure for one real pick of the
   measured `106.5 x 76.5 x 30.0 mm` test box, covering CAN activation, plan-only
   checks, runtime gates, explicit enable, emergency stop, result acceptance,
   supported release, and shutdown. Updated the recorded calibration, test, and
   real-arm acceptance status to match the latest field work.
+- Updated the root and package READMEs to use `source ~/grasp_ws/env.sh`, show
+  the official AGX home default, and remove the stale side-grasp home example.
 - Documented the verified Home-to-observation recovery path, including the
   asynchronous `/move_home` completion check, powered Home hold, table collision
   object, and 5% MoveGroup planning limits.
@@ -39,6 +52,28 @@ cannot be reconstructed exactly from this repository.
 
 ### Validation
 
+- After the configuration cleanup and renames, a fresh
+  `source /opt/ros/humble/setup.bash && source ~/agx_arm_ws/install/setup.bash
+  && colcon build --symlink-install` completed all five workspace packages.
+- Re-verified the complete local workspace build after explicitly sourcing ROS 2
+  Humble: `source /opt/ros/humble/setup.bash && colcon build --symlink-install`
+  finished all five packages, including `agx_arm_msgs` and `smart_grasp_moveit`.
+- Static-audit repairs were validated with a complete five-package build,
+  `21 passed` Python tests, and four `smart_grasp_moveit` C++ safety tests.
+- Re-verified the arm chain end to end with the official home default:
+  `enable -> move_home -> disable` all returned success on `piper_x` with the
+  AgileX gripper, and the control node reported successful home and disable
+  transitions.
+- Real-arm negative validation reached the pregrasp pose after both wrist
+  candidates passed full Cartesian-descent checks, then aborted before descent
+  with `STALE_TARGET (7)` because cross-view XY shift was `9.4 mm` against the
+  configured `5 mm` limit. No close, contact, attach, or lift was executed.
+- Recorded that a post-Home GenericSystem resynchronization action can briefly
+  open the automatic physical-control gate. The driver's initial-jump guard
+  rejected the `0.618 rad` mismatch; this gate interaction remains unresolved.
+- Require explicit on-site confirmation before every software arm-disable
+  request; completion, Home, and earlier motion authorization do not imply
+  permission to disable.
 - Completed the first full real-arm pick of the measured test box through
   observation, re-detection, pregrasp, approach, `76.6 mm` contact validation,
   attachment, and 50 mm lift. The action returned `success=true` and
@@ -50,6 +85,24 @@ cannot be reconstructed exactly from this repository.
   errors that do not affect the completed pick.
 
 ### Fixed
+
+- Restored the default perception stability gate by disabling `trust_yolo` in
+  the default profile and limiting that explicit override to the YOLO-Seg
+  backend. Invalid detections now copy image headers before assigning
+  `base_link`, preventing debug-image frame corruption.
+- Made fixed collision geometry self-consistent with the observed top surface
+  and reject degenerate minimum-area rectangles before they can publish NaN
+  orientation data.
+- Removed the detection wait lost-wakeup window, prune expired detection
+  entries, wait for a post-command gripper feedback sample before validating
+  contact, return `BUSY` action results, and join the pick execution thread
+  during node teardown.
+- Reconnected the legacy diagnostic executor to `/smart_grasp/object_pose`,
+  moved its Trigger endpoint to `/smart_grasp/legacy_pick`, and made its
+  gripper-feedback wait and busy guard effective.
+- Hardened `param_tuner` against empty set-parameter responses, allowed a
+  short ROS graph discovery window, removed a stale GUI node name and unused
+  `grab_frame.py` import, and corrected the test-box dimension documentation.
 
 - Validate the complete Cartesian descent for every plannable 180-degree wrist
   candidate before any real motion. The measured test-box profile now requires

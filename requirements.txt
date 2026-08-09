@@ -1,0 +1,3 @@
+# Numerical and OpenCV dependencies are installed from Ubuntu/ROS apt packages.
+# Required only when detector_backend=yolo_seg is selected.
+ultralytics

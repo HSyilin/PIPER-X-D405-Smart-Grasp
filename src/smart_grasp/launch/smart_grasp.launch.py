@@ -19,7 +19,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -28,28 +28,39 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = get_package_share_directory("smart_grasp")
-    params = os.path.join(pkg_share, "config", "grasp_params.yaml")
+    params = os.path.join(pkg_share, "config", "detector_hsv.yaml")
 
     use_camera = LaunchConfiguration("use_camera")
     open_gui = LaunchConfiguration("open_gui")   # rqt 图像 + 参数 (需本机 DISPLAY)
     open_web = LaunchConfiguration("open_web")   # web_video_server 浏览器看图 (SSH 友好)
+    camera_serial_no = LaunchConfiguration("camera_serial_no")
 
-    realsense_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("realsense2_camera"),
-                "launch", "rs_launch.py")),
-        launch_arguments={
-            "camera_namespace": "camera",
-            "camera_name": "camera",
-            "align_depth.enable": "true",
-            "enable_color": "true",
-            "enable_depth": "true",
-            "rgb_camera.color_profile": "640x480x30",
-            "depth_module.depth_profile": "640x480x30",
-        }.items(),
-        condition=IfCondition(use_camera),
-    )
+    def quote_serial_no(context):
+        serial = camera_serial_no.perform(context)
+        if serial.startswith("'") and serial.endswith("'"):
+            return serial
+        return f"'{serial}'"
+
+    def launch_camera(context, *args, **kwargs):
+        return [
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(
+                        get_package_share_directory("realsense2_camera"),
+                        "launch", "rs_launch.py")),
+                launch_arguments={
+                    "camera_namespace": "camera",
+                    "camera_name": "camera",
+                    "serial_no": quote_serial_no(context),
+                    "align_depth.enable": "true",
+                    "enable_color": "true",
+                    "enable_depth": "true",
+                    "rgb_camera.color_profile": "640x480x30",
+                    "depth_module.depth_profile": "640x480x30",
+                }.items(),
+                condition=IfCondition(use_camera),
+            )
+        ]
 
     # 本机有显示器时: 同时打开图像查看器 与 参数调节面板
     image_view_node = Node(
@@ -63,7 +74,7 @@ def generate_launch_description():
         package="rqt_reconfigure",
         executable="rqt_reconfigure",
         name="rqt_reconfigure",
-        arguments=["smart_grasp_detector", "smart_grasp_executor"],
+        arguments=["smart_grasp_detector"],
         condition=IfCondition(open_gui),
     )
     # SSH 远程无 DISPLAY: 用浏览器看图像 (另用 ros2 run smart_grasp param_tuner 调参)
@@ -78,7 +89,12 @@ def generate_launch_description():
         DeclareLaunchArgument("use_camera", default_value="true"),
         DeclareLaunchArgument("open_gui", default_value="false"),
         DeclareLaunchArgument("open_web", default_value="false"),
-        realsense_launch,
+        DeclareLaunchArgument(
+            "camera_serial_no",
+            default_value="260322272696",
+            description="D405 serial number used to pin the camera node.",
+        ),
+        OpaqueFunction(function=launch_camera),
         Node(
             package="smart_grasp",
             executable="detector_node",

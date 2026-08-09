@@ -2,6 +2,10 @@
 /build/
 /install/
 /log/
+/logs/
+/.portable/
+/.venv/
+/.agx_arm_venv/
 
 # Python/test caches
 **/__pycache__/
@@ -14,6 +18,9 @@
 .vscode/
 *~
 *.swp
+
+# Local configuration snapshots
+src/smart_grasp_bringup/config/*.bak_*
 
 # Runtime captures and generated models
 *.bag

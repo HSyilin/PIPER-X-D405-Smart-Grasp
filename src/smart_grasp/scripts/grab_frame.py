@@ -4,7 +4,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-import cv2, sys
+import cv2
 
 class Grab(Node):
     def __init__(self):

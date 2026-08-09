@@ -28,6 +28,7 @@ setup(
             'tf_validator_node = smart_grasp.tf_validator_node:main',
             'grasp_executor_node = smart_grasp.grasp_executor_node:main',
             'param_tuner = smart_grasp.param_tuner:main',
+            'mission_sequencer = smart_grasp.mission_sequencer:main',
         ],
     },
 )

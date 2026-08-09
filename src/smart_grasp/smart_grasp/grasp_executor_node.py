@@ -4,18 +4,18 @@
 抓取执行节点 (eye-in-hand)
 坐标链:  P_base = T_base->tcp (实时 feedback/tcp_pose)
                · T_tcp->cam (手眼标定 JSON)
-               · P_cam    (/smart_grasp/target_pose)
+               · P_cam    (legacy camera-frame target pose)
 
 流程 (std_srvs/Trigger 触发):
-  采样目标 -> 张开夹爪 -> 预抓取点(上方) -> 下探 -> 闭合 -> 抬起 -> (可选)回home
+  采样目标 -> 张开夹爪 -> 预抓取点(上方) -> 下探 -> 闭合 -> 抬起
 
 接口:
-  订阅  /smart_grasp/target_pose   (PoseStamped, 相机光学系)
+  订阅  /smart_grasp/object_pose   (PoseStamped, base_link)
   订阅  feedback/tcp_pose          (PoseStamped, 基座系)
   发布  control/move_p             (PoseStamped)
   发布  control/joint_states       (JointState, gripper 关节)
-  服务  /smart_grasp/pick          (std_srvs/Trigger)
-  服务  /smart_grasp/home          (std_srvs/Trigger)
+  服务  /smart_grasp/legacy_pick   (std_srvs/Trigger)
+  服务  /smart_grasp/home          (std_srvs/Trigger, legacy; official homing uses /move_home)
 """
 import json
 import math
@@ -70,7 +70,7 @@ class GraspExecutorNode(Node):
         # ---- 参数 (均带 rqt_reconfigure 滑条范围, 运行时可改) ----
         self.declare_parameter(
             "handeye_json",
-            "/home/mdz/handeye_ws/result/eye_in_hand_d405_px_connected_20260725.json",
+            "/home/guest/handeye_ws/result/eye_in_hand_d405_px_connected_20260725.json",
             ParameterDescriptor(description="手眼标定JSON (改后自动重载 T_tcp_cam)"))
         self.declare_parameter("sample_num", 10, idesc("目标位姿采样次数", 1, 50))
         self.declare_parameter(
@@ -121,6 +121,9 @@ class GraspExecutorNode(Node):
             "orientation_mode", "keep_current",
             ParameterDescriptor(description="keep_current | fixed_rpy"))
         self.declare_parameter(
+            "base_frame", "base_link",
+            ParameterDescriptor(description="抓取目标和控制命令的基座坐标系"))
+        self.declare_parameter(
             "grasp_rpy", [math.pi, 0.0, 0.0],
             ParameterDescriptor(description="fixed_rpy 模式下的抓取姿态 [rx,ry,rz](rad)"))
         # 工作空间保护 (基座系, 超范围拒绝执行) —— 数组用 ros2 param set 修改
@@ -145,6 +148,7 @@ class GraspExecutorNode(Node):
 
         # ---- 状态 ----
         self._lock = threading.Lock()
+        self._gripper_condition = threading.Condition(self._lock)
         self._latest_target = None       # (PoseStamped, 收到时的 T_base_tcp)
         self._latest_target_rx = None    # monotonic receive time
         self._latest_tcp = None          # PoseStamped
@@ -155,7 +159,7 @@ class GraspExecutorNode(Node):
 
         # ---- 通信 ----
         self.create_subscription(
-            PoseStamped, "/smart_grasp/target_pose",
+            PoseStamped, "/smart_grasp/object_pose",
             self._target_callback, 1, callback_group=cb)
         self.create_subscription(
             PoseStamped, "feedback/tcp_pose",
@@ -166,12 +170,15 @@ class GraspExecutorNode(Node):
         self.move_pub = self.create_publisher(PoseStamped, "control/move_p", 1)
         self.joint_pub = self.create_publisher(JointState, "control/joint_states", 1)
 
-        self.create_service(Trigger, "/smart_grasp/pick",
+        self.create_service(Trigger, "/smart_grasp/legacy_pick",
                             self._pick_service, callback_group=cb)
         self.create_service(Trigger, "/smart_grasp/home",
                             self._home_service, callback_group=cb)
 
-        self.get_logger().info("抓取执行节点就绪, 调用 /smart_grasp/pick 触发抓取")
+        self.get_logger().info(
+            "抓取执行诊断节点就绪, 调用 /smart_grasp/legacy_pick 触发抓取; "
+            "官方回零请用 /move_home"
+        )
 
     # ================= 参数/手眼 =================
     def _load_handeye(self, path):
@@ -204,16 +211,22 @@ class GraspExecutorNode(Node):
             self._latest_tcp = msg
 
     def _gripper_callback(self, msg: GripperStatus):
-        with self._lock:
+        with self._gripper_condition:
             self._latest_gripper = msg
             self._latest_gripper_rx = time.monotonic()
+            self._gripper_condition.notify_all()
 
     def _target_callback(self, msg: PoseStamped):
         with self._lock:
-            if self._latest_tcp is None:
+            base_frame = self.get_parameter("base_frame").value.lstrip("/")
+            source_frame = msg.header.frame_id.lstrip("/")
+            if source_frame == base_frame:
+                self._latest_target = (msg, None)
+            elif self._latest_tcp is None:
                 return
-            # 关键: 记录目标点时刻对应的 TCP 位姿 (眼在手上, 相机随臂动)
-            self._latest_target = (msg, self._latest_tcp)
+            else:
+                # Legacy camera-frame targets must retain the matching TCP pose.
+                self._latest_target = (msg, self._latest_tcp)
             self._latest_target_rx = time.monotonic()
 
     # ================= 坐标变换 =================
@@ -241,12 +254,20 @@ class GraspExecutorNode(Node):
                 stamp = (tgt.header.stamp.sec, tgt.header.stamp.nanosec)
                 if stamp != last_stamp:
                     last_stamp = stamp
-                    T_base_tcp = self._tcp_msg_to_mat(tcp)
-                    p_cam = np.array([tgt.pose.position.x,
-                                      tgt.pose.position.y,
-                                      tgt.pose.position.z, 1.0])
-                    p_base = T_base_tcp @ self.T_tcp_cam @ p_cam
-                    pts.append(p_base[:3])
+                    base_frame = self.get_parameter("base_frame").value.lstrip("/")
+                    if tgt.header.frame_id.lstrip("/") == base_frame:
+                        pts.append(np.array([
+                            tgt.pose.position.x,
+                            tgt.pose.position.y,
+                            tgt.pose.position.z,
+                        ]))
+                    elif tcp is not None:
+                        T_base_tcp = self._tcp_msg_to_mat(tcp)
+                        p_cam = np.array([tgt.pose.position.x,
+                                          tgt.pose.position.y,
+                                          tgt.pose.position.z, 1.0])
+                        p_base = T_base_tcp @ self.T_tcp_cam @ p_cam
+                        pts.append(p_base[:3])
             time.sleep(0.03)
         if len(pts) < max(3, n // 3):
             return None
@@ -280,7 +301,7 @@ class GraspExecutorNode(Node):
     def _move_p(self, xyz, quat, wait=True):
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "base_link"
+        msg.header.frame_id = self.get_parameter("base_frame").value
         msg.pose.position.x = float(xyz[0])
         msg.pose.position.y = float(xyz[1])
         msg.pose.position.z = float(xyz[2])
@@ -339,7 +360,7 @@ class GraspExecutorNode(Node):
         return False
 
     def _set_gripper(self, position, hold=1.0):
-        with self._lock:
+        with self._gripper_condition:
             previous_rx = self._latest_gripper_rx
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -348,21 +369,24 @@ class GraspExecutorNode(Node):
         msg.effort = [float(self.get_parameter("gripper_effort").value)]
         self.joint_pub.publish(msg)
         deadline = time.monotonic() + hold
-        while time.monotonic() < deadline:
-            with self._lock:
+        received_update = False
+        with self._gripper_condition:
+            while time.monotonic() < deadline:
                 current_rx = self._latest_gripper_rx
-            if current_rx is not None and current_rx != previous_rx:
-                previous_rx = current_rx
-            time.sleep(0.05)
-        return self._gripper_fault_reason() is None
+                if current_rx is not None and current_rx != previous_rx:
+                    received_update = True
+                    break
+                self._gripper_condition.wait(timeout=max(0.0, deadline - time.monotonic()))
+        return received_update and self._gripper_fault_reason() is None
 
     # ================= 服务 =================
     def _pick_service(self, req, resp):
-        if self._busy:
-            resp.success = False
-            resp.message = "上一次抓取尚未完成"
-            return resp
-        self._busy = True
+        with self._lock:
+            if self._busy:
+                resp.success = False
+                resp.message = "上一次抓取尚未完成"
+                return resp
+            self._busy = True
         try:
             resp.success, resp.message = self._do_pick()
         except Exception as e:
@@ -370,7 +394,8 @@ class GraspExecutorNode(Node):
             resp.message = f"异常: {e}"
             self.get_logger().error(f"抓取异常: {e}")
         finally:
-            self._busy = False
+            with self._lock:
+                self._busy = False
         return resp
 
     def _do_pick(self):

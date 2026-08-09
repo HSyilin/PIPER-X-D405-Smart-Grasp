@@ -16,6 +16,6 @@ smart_grasp_detector:
     orientation_surface_band: 0.008
     tf_lookup_timeout: 0.10
     # Used only by collision/grasp geometry; perception never measures or matches size.
-    fixed_object_size: [0.060, 0.040, 0.040]
+    fixed_object_size: [0.060, 0.060, 0.040]
     yaw_outlier_radius_deg: 12.0
     table_height: -999.0

@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+from scipy.spatial.transform import Rotation
 
 from smart_grasp.depth_geometry import (
     depth_to_meters,
@@ -25,15 +27,20 @@ def test_fixed_geometry_and_grasp_candidates():
     points = np.column_stack((
         # Deliberately disagree with the configured dimensions. The point cloud
         # may determine pose, but it must never determine or reject target size.
-        rng.uniform(-0.04, 0.04, 3000),
-        rng.uniform(-0.055, 0.055, 3000),
+        rng.uniform(-0.03, 0.03, 3000),
+        rng.uniform(-0.03, 0.03, 3000),
         rng.uniform(0.038, 0.040, 3000),
     ))
-    box = estimate_oriented_box(points, [0.060, 0.040, 0.040], table_z=0.0)
-    assert np.allclose(box.size, [0.060, 0.040, 0.040])
+    box = estimate_oriented_box(points, [0.060, 0.060, 0.040], table_z=0.0)
+    assert np.allclose(box.size, [0.060, 0.060, 0.040])
+    assert np.isclose(box.center[2] + 0.5 * box.size[2], box.top_z)
     candidates = make_grasp_candidates(box, 0.020, [0.0, 0.0, 0.1425])
     assert len(candidates) == 2
     assert all(position[2] > box.top_z for position, _ in candidates)
+    candidate_rotations = [Rotation.from_quat(quaternion).as_matrix()
+                           for _, quaternion in candidates]
+    assert np.allclose(candidate_rotations[0][:, 0], box.short_axis)
+    assert np.allclose(candidate_rotations[1][:, 0], -box.short_axis)
 
 
 def test_outlier_radius_does_not_clip_large_configured_target():
@@ -65,7 +72,48 @@ def test_orientation_uses_top_surface_instead_of_blue_side_faces():
     ))
 
     box = estimate_oriented_box(
-        np.vstack((top, side)), [0.1065, 0.0765, 0.0300],
+        np.vstack((top, side)), [0.060, 0.060, 0.040],
         table_z=0.010, orientation_surface_band=0.008,
     )
     assert abs(np.dot(box.short_axis, [1.0, 0.0, 0.0])) > 0.95
+
+
+def test_minimum_area_rectangle_resists_uneven_surface_density():
+    rng = np.random.default_rng(21)
+    angle = np.deg2rad(30.0)
+    rotation = np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)],
+    ])
+    boundary = np.vstack((
+        np.column_stack((np.full(200, -0.038), np.linspace(-0.053, 0.053, 200))),
+        np.column_stack((np.full(200, 0.038), np.linspace(-0.053, 0.053, 200))),
+        np.column_stack((np.linspace(-0.038, 0.038, 200), np.full(200, -0.053))),
+        np.column_stack((np.linspace(-0.038, 0.038, 200), np.full(200, 0.053))),
+    ))
+    dense_patch = np.column_stack((
+        rng.uniform(-0.035, -0.005, 3000),
+        rng.uniform(-0.050, -0.020, 3000),
+    ))
+    xy = np.vstack((boundary, dense_patch)) @ rotation.T
+    points = np.column_stack((xy, rng.uniform(0.039, 0.040, len(xy))))
+
+    box = estimate_oriented_box(
+        points, [0.060, 0.060, 0.040],
+        table_z=0.010, orientation_surface_band=0.020,
+    )
+
+    expected_short_axis = rotation @ np.array([1.0, 0.0])
+    assert abs(np.dot(box.short_axis[:2], expected_short_axis)) > 0.99
+    assert np.linalg.norm(box.center[:2]) < 0.002
+
+
+def test_degenerate_top_surface_is_rejected():
+    points = np.column_stack((
+        np.linspace(-0.05, 0.05, 20),
+        np.zeros(20),
+        np.full(20, 0.04),
+    ))
+
+    with pytest.raises(ValueError, match="degenerate top-surface rectangle"):
+        estimate_oriented_box(points, [0.060, 0.040, 0.040], table_z=0.0)

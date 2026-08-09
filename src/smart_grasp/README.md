@@ -1,6 +1,6 @@
 # Smart Grasp
 
-ROS 2 Humble pipeline for detecting and grasping a blue `60 x 40 x 40 mm`
+ROS 2 Humble pipeline for detecting and grasping a blue `60 x 60 x 40 mm`
 rounded block with a Piper-X, AgileX gripper, and eye-in-hand RealSense D405.
 
 ## Packages
@@ -25,15 +25,16 @@ explicit `grasp_executor_node` diagnostic executable. No default launch starts i
 | 编排/配置 `smart_grasp_bringup` | ✅ 完成 | `smart_grasp_system.launch.py` 统一编排 + 校验门控 |
 | 稳定性门控 | ✅ 完成 | `stability.py` 多帧稳定性判断 |
 | 调参器 `param_tuner` | ✅ 完成 | SSH 友好 `name=value` 交互改参（已修重复 `rclpy.init` 崩溃 bug） |
-| **真实抓取前待补** | 🟡 阻塞 | 见下「Required validation」：`table_*` 实测值、`calibration_validated:=true`、目标配置 |
+| **真实抓取前待补** | 🟡 阻塞 | 见下「Required validation」：`table_*` 实测值、`handeye_20260725.yaml` 置 `validated: true` |
 
 > 外部依赖已对齐：`agx_arm_msgs::GripperStatus` 字段、`agx_arm_moveit` 的 SRDF 组 `arm` / link `tcp_link`、`gripper_base/link1/link2` 均匹配；`agx_arm_ws` 已编译。
 
 手眼节点会在启动后有限重发 `tcp_link -> camera_link` 静态TF，解决VMware中
 首个 transient-local 样本在DDS发现完成前发布而造成TF树断开的情况。
 
-`perception_test_box_106x76x30.yaml` 是现场调试专用配置：使用8帧窗口、
-30度角度内点半径和20度单姿态角度极差。该放宽不改变下方手眼验证要求的
+`perception_test_box_60x40x40.yaml` 是现场调试专用配置；
+当前值按 `60 x 40 x 40 mm` 物块和机械臂平台高于物块平台 `30 mm` 配置。
+它使用8帧窗口、30度角度内点半径和20度单姿态角度极差。该放宽不改变下方手眼验证要求的
 20 mm位置极差和3度方向极差。
 
 ## Build
@@ -47,7 +48,7 @@ cd ~/grasp_ws
 source /opt/ros/humble/setup.bash
 source ~/agx_arm_ws/install/setup.bash
 colcon build --symlink-install
-source install/setup.bash
+source env.sh
 ```
 
 ## Start safely
@@ -57,15 +58,16 @@ but leaves arm auto-enable and grasp execution disabled:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/agx_arm_ws/install/setup.bash
-source ~/grasp_ws/install/setup.bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py
+source ~/grasp_ws/env.sh
+ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
+  camera_serial_no:=260322272696
 ```
 
 2-D perception without starting the arm/MoveIt or requiring depth/TF:
 
 ```bash
 ros2 launch smart_grasp_bringup camera_only.launch.py \
+  camera_serial_no:=260322272696 \
   color_profile:=640x480x30 open_gui:=false
 ```
 
@@ -88,25 +90,72 @@ ros2 action send_goal /smart_grasp/pick \
    is below 20 mm and orientation span below 3 degrees.
 3. After that test, set `validated: true` in `handeye_20260725.yaml`
    (calibration/validator flag) **and** arm the server with the launch arg
-   `calibration_validated:=true` — this second flag is what actually gates execution.
+   `calibration_validated:=true`. The `reconcile_calibration` function
+   ensures you cannot bypass the yaml check: passing a CLI flag before
+   updating the yaml is silently overridden to `false`. Both must be true.
 4. Enable the arm manually and retain `speed_percent:=10` for staged commissioning.
+
+The launch-internal `reconcile_calibration` function reads the yaml `validated`
+field and only ever clamps down — if the yaml still reports `false`, any
+`calibration_validated:=true` on the command line is forced back to `false`.
+This prevents unverified hand-eye calibration from opening the execution gate,
+but it never auto-promotes: you must explicitly pass both flags.
 
 Both the action goal (`execute: true`) and the server arming parameter must be
 true. Missing table measurements, an unvalidated calibration, stale TF/depth,
 unstable pose, trajectory start mismatch, wrist jump, or gripper fault aborts the
 state machine before the following command is sent.
 
-After all validation gates pass, arm the launch and then enable the hardware:
+After all validation gates pass, use this real-arm sequence:
 
 ```bash
 ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
+  camera_serial_no:=260322272696 \
   execute:=true calibration_validated:=true
+# calibration_validated is gated by reconcile_calibration: the handeye yaml
+# must also have validated: true, or the flag is silently forced to false.
 
 ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: true}"
+ros2 service call /move_home std_srvs/srv/Empty "{}"
+ros2 action send_goal /smart_grasp/pick \
+  smart_grasp_interfaces/action/PickObject \
+  "{target_class: blue_block, execute: true}" --feedback
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: false}"
 ```
 
-Real motion still requires a separate action goal with `execute: true`; the
-launch flags alone never start a pick.
+Use the official AGX `/move_home` service first. Then `/smart_grasp/pick`
+moves to the configured observation pose, runs detect/reobserve/pregrasp/
+approach/close/lift, returns home with the gripper held closed, and only then
+finishes. Use
+`execute: false` only for a read-only check; it still requires the arm to
+already be at the observation pose. The legacy `/smart_grasp/home` service is
+not part of the main workflow. The default grasp config is now
+`grasp_test_box_60x40x40.yaml`; use `grasp.yaml` as the editable template.
+
+## Static obstacle modeling (radar / controller)
+
+The radar mast and main controller sit next to the arm and are **fixed relative
+to `base_link`**, so they never move in the robot frame. They are **not** in the
+planning scene by default and MoveIt would happily route the arm through them.
+Model them as static collision boxes:
+
+```yaml
+# grasp_test_box_60x40x40.yaml  (smart_grasp_bringup/config/grasp_test_box_60x40x40.yaml)
+static_obstacles: |
+  # id,size_x,size_y,size_z,pos_x,pos_y,pos_z  (CSV, no spaces)
+  # size = full box dimensions (m); pos = box CENTER in base_link (m)
+  radar_mast,0.20,0.20,0.90,0.00,-0.45,0.45
+  main_controller,0.30,0.25,0.30,0.35,0.00,0.15
+# Hard planning bound in base_link (min_x,min_y,min_z,max_x,max_y,max_z):
+workspace: [-0.20, -0.70, -0.10, 0.90, 0.70, 1.20]
+```
+
+`pick_server` parses `static_obstacles` in `applyScene()` (one box per non-empty,
+non-`#` line) and `ADD`s each as a `BOX` collision object in `base_frame`. The
+`workspace` vector is applied via `move_group->setWorkspace()` during
+`initialize()`, acting as a hard bound so the planner never exits the safe
+volume. Both are **conservative placeholders** — measure the real geometry on
+site and replace the numbers. Add more lines for cable trays, supports, etc.
 
 At each stopped observation pose, record one independent validation sample:
 
@@ -125,6 +174,7 @@ then launch with:
 
 ```bash
 ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
+  camera_serial_no:=260322272696 \
   detector_backend:=yolo_seg \
   yolo_model:=$HOME/grasp_ws/src/smart_grasp_bringup/models/blue_block_seg.pt
 ```
@@ -139,7 +189,8 @@ during a real action.
 
 - 只看感知（不起机械臂 / MoveIt）:
   ```bash
-  ros2 launch smart_grasp_bringup camera_only.launch.py
+  ros2 launch smart_grasp_bringup camera_only.launch.py \
+    camera_serial_no:=260322272696
   ```
 - RViz 里通过 Image、TF、MarkerArray 和 PointCloud2 显示分别查看
   `/smart_grasp/debug_image`、TF、`/smart_grasp/debug_markers` 和
@@ -154,7 +205,7 @@ during a real action.
 - HSV 后端自动计算每个蓝色轮廓的像素面积、凸度、矩形度、二维外接矩形和
   图像内角度。这些数据用于二维筛选，单位是像素，不是物体的实际毫米尺寸。
 - 完整 RGB-D 模式读取 Mask 内的对齐深度，使用 CameraInfo 反投影点云，
-  转换到 `base_link` 后通过顶部点云带 PCA 计算水平朝向，避免侧面深度干扰。
+  转换到 `base_link` 后通过顶部点云带最小外接矩形计算中心和水平朝向。
 - 不测量、不匹配物体长宽高，也没有 `SIZE_MISMATCH`。每个 `track_id` 的多帧
   窗口只检查位置和水平角；180度对称角使用圆周统计并剔除少量离群帧。
 - `/smart_grasp/detections.size` 来自 `fixed_object_size` 配置，仅供碰撞盒和抓取
@@ -186,6 +237,10 @@ during a real action.
 
 - action goal 中的 `target_class`（如 `blue_block`）只负责选择检测类别。
 - HSV 和预设目标几何由 `config/perception.yaml` 提供，抓取和场景参数由
-  `config/grasp.yaml` 提供。
-- `config/target_blue_block.yaml` 当前保留为版本化目标配置参考，尚未接入 launch；
-  不应把它误认为 action goal 的替代品，也不在未确认配置归属时删除。
+  `config/grasp_test_box_60x40x40.yaml` 提供（含 `target_class: "1"` 和
+  `fixed_object_size`）。
+- 这版测试盒参数把 `gripper_close` 调到 `0.046`，并同步下调了 `contact_width_min/max`。
+- `config/grasp.yaml` 作为可编辑模板保留；当前值会阻止真实执行，避免误用。
+- `config/handeye_20260725.yaml` 的 `validated: true` 是抓取执行的前置门控；
+  `reconcile_calibration` 只向下压制（yaml 不通过时拒绝 CLI 覆写），仍需显式传
+  `calibration_validated:=true`。

@@ -1,247 +1,84 @@
-# PIPER-X D405 Smart Grasp
+# Smart Grasp Workspace
 
-当前版本：`0.2.0`，日期：`2026-07-26`。
+PIPER-X 机械臂 + AgileX 夹爪 + 眼在手上 RealSense D405 的 ROS 2 智能抓取工作区。
 
-本工作区实现 PIPER-X、AgileX 夹爪和眼在手上的 RealSense D405 对蓝色
-`60 x 40 x 40 mm` 圆角长方体进行识别、三维定位、MoveIt 规划与抓取。
-第一阶段使用 OpenCV HSV，保留 YOLO-Seg 实例分割接口。当前默认状态只允许
-识别和规划，外参及桌面数据未通过现场验证前不能执行真机动作。
+系统链路：D405 RGB-D 感知 -> 手眼 TF -> MoveIt 规划 -> `pick_server` 执行抓取。目标物体默认为蓝色方块，感知后端支持 `hsv` 和 `yolo_seg`。
 
-## 1. 系统边界
-
-当前范围：
-
-- 固定机械臂基座、固定桌面、单个或少量静止目标。
-- HSV 识别蓝色目标，D405 对齐深度只负责三维位置和水平朝向定位。
-- 顶部两指抓取，抓起后沿 `base_link +Z` 抬升 50 mm 并保持。
-- MoveIt 2、KDL 和 OMPL RRTConnect 负责规划。
-- 支持只规划、取消、安全失败和低速分级调试。
-
-当前不包含：
-
-- TRON 2 导航和底盘运动控制。
-- 放置流程、多目标任务调度、动态避障和 Octomap 闭环。
-- 已训练的 YOLO 权重及其现场精度验收。
-- 已通过验收的手眼外参和桌面碰撞尺寸。
-
-## 2. 整体结构
+## 项目结构
 
 ```text
-RealSense D405
-  color/image_raw + aligned_depth_to_color/image_raw + CameraInfo
-                         |
-                         v
-smart_grasp_detector -----------------------------------------------+
-  HSV / YOLO-Seg -> Instance Mask -> 深度点云 -> 平面/PCA          |
-  -> TF(base_link) -> 位姿多帧稳定 -> 固定几何抓取候选              |
-                         |                                          |
-                         +--> detections / cloud / poses / debug     |
-                                                                    v
-feedback/tcp_pose -> handeye_tf_node -> base->tcp->camera      PickObject Action
-                                                              smart_grasp_moveit
-                                                                    |
-                      PlanningScene(table + target) <---------------+
-                                                                    |
-                    RRTConnect预抓取 -> 笛卡尔接近 -> 夹爪闭合
-                    -> 接触验证 -> 附着物体 -> 笛卡尔抬升
-                                                                    |
-               arm_controller + gripper_controller FollowJointTrajectory
-                                                                    |
-                     自动控制门 -> agx_arm_ctrl -> pyAgxArm -> can0
+grasp_ws/
+├── src/
+│   ├── smart_grasp/              # 感知、RGB-D 几何、手眼 TF、调参工具
+│   ├── smart_grasp_bringup/      # 统一启动、配置、RViz/模型占位
+│   ├── smart_grasp_moveit/       # MoveIt 抓取 action server
+│   ├── smart_grasp_interfaces/   # DetectedObject.msg / PickObject.action
+│   └── agx_arm_msgs/             # 机械臂与夹爪状态消息
+├── env.sh                        # 本工作区 Python 环境
+├── requirements.txt              # Python/视觉依赖说明
+├── build/ install/ log/          # colcon 产物
+└── README.md
 ```
 
-以后安装到 TRON 2 时，在上层增加 `tron_base_link -> base_link` 和 Nav2 任务
-协调器；相机仍固定在机械臂 TCP 附近时，感知、手眼和抓取包不改变。
+外部机械臂与 MoveIt 工作区：`~/agx_arm_ws`。
 
-## 3. 工作区依赖
+## 关键文件
 
 ```text
-~/pyAgxArm       官方 Python SDK，负责 CAN 和机械臂底层通信
-      ^
-      |
-~/agx_arm_ws     官方 ROS 2 驱动、描述、ros2_control 和 MoveIt 配置
-      ^
-      |
-~/grasp_ws       本仓库：感知、接口、抓取执行和统一启动
+src/smart_grasp_bringup/launch/smart_grasp_system.launch.py
+  完整系统启动入口。
 
-~/handeye_ws     标定工具和原始结果；运行时不 overlay，只复制版本化结果
-```
+src/smart_grasp_bringup/launch/camera_only.launch.py
+  仅启动 D405 + 2-D 检测，用于相机/识别调试。
 
-构建和运行 overlay 顺序必须是：
+src/smart_grasp_bringup/config/grasp_test_box_60x40x40.yaml
+  默认真机抓取参数；机械臂观察位姿在 observation_joint_positions。
 
-```bash
-source /opt/ros/humble/setup.bash
-source ~/agx_arm_ws/install/setup.bash
-source ~/grasp_ws/install/setup.bash
-```
+src/smart_grasp_bringup/config/grasp.yaml
+  抓取参数模板；observation_joint_positions 为空时会阻止抓取。
 
-## 4. 包和文件职责
+src/smart_grasp_bringup/config/perception_test_box_60x40x40.yaml
+  真机测试盒感知参数。
 
-| 包/目录 | 职责 | 关键内容 |
-|---|---|---|
-| `smart_grasp_interfaces` | 稳定的跨包契约 | `DetectedObject.msg`、`PickObject.action`、失败码 |
-| `smart_grasp` | Python 感知与 TF | HSV/YOLO 后端、RGB-D 几何、稳定跟踪、调试输出、手眼 TF、TF 验证器 |
-| `smart_grasp_moveit` | C++ 抓取动作服务器 | 目标选择、候选生成、MoveIt 规划、PlanningScene、夹爪控制、安全状态机 |
-| `smart_grasp_bringup` | 运行配置和统一启动 | launch、感知/抓取/外参/目标配置、模型目录、RViz 说明 |
-| `agx_arm_ws/.../agx_arm_moveit` | 下层 MoveIt 集成 | 显式 OMPL RRTConnect、控制门同时监听机械臂和夹爪 |
-| `test/` | 纯算法回归测试 | HSV、深度单位、投影、固定抓取几何、位姿稳定性、TF 极差 |
+src/smart_grasp_bringup/config/perception.yaml
+  默认感知参数。
 
-`smart_grasp` 内部模块：
-
-| 文件 | 功能 |
-|---|---|
-| `detection_backends.py` | `DetectionBackend`、`HsvBackend`、`YoloSegBackend` 和统一 `InstanceMask` |
-| `detector_node.py` | 图像同步、TF 查询、3D 定位、跟踪、评分及所有调试话题 |
-| `depth_geometry.py` | 深度单位、反投影、点云变换、桌面 RANSAC、PCA 位姿和固定几何抓取姿态 |
-| `stability.py` | 位姿多帧离群剔除、极差计算及外参验证统计 |
-| `handeye_tf_node.py` | 发布 `base_link -> tcp_link -> camera_link`，避免光学帧双父节点 |
-| `tf_validator_node.py` | 手动记录 5-8 个观察姿态并判断外参稳定性门槛 |
-| `grasp_executor_node.py` | 旧直接控制诊断工具；不在默认 launch 中，默认禁止执行 |
-
-## 5. ROS 接口
-
-感知输出：
-
-| 名称 | 类型 | 内容 |
-|---|---|---|
-| `/smart_grasp/detections` | `smart_grasp_interfaces/DetectedObject` | ID、类别、置信度、基座位姿、预设几何、深度率、稳定状态、拒绝原因 |
-| `/smart_grasp/object_cloud` | `sensor_msgs/PointCloud2` | 当前通过验证的目标点云 |
-| `/smart_grasp/object_pose` | `geometry_msgs/PoseStamped` | 最高分目标物体位姿 |
-| `/smart_grasp/grasp_candidates` | `geometry_msgs/PoseArray` | 相差 180 度的两个 TCP 候选 |
-| `/smart_grasp/debug_image` | `sensor_msgs/Image` | Mask、轮廓、深度率、稳定状态和拒绝原因 |
-| `/smart_grasp/debug_markers` | `visualization_msgs/MarkerArray` | 预设目标碰撞盒和抓取姿态 |
-
-动作和服务：
-
-| 名称 | 类型 | 用途 |
-|---|---|---|
-| `/smart_grasp/pick` | `smart_grasp_interfaces/PickObject` | 只规划或执行完整抓取状态机 |
-| `/smart_grasp/validation/record` | `std_srvs/Trigger` | 在一个静止观察姿态记录一次外参验证样本 |
-| `/smart_grasp/validation/reset` | `std_srvs/Trigger` | 清除外参验证样本 |
-| `/enable_agx_arm` | `std_srvs/SetBool` | 人工使能/失能真机 |
-| `/control_enable` | `std_srvs/SetBool` | 由执行状态自动控制的外部命令门 |
-
-`PickObject` 的 `execute=false` 只规划；`execute=true` 仍需系统启动参数
-`execute:=true`，二者缺一不可。
-
-## 6. 感知实现
-
-默认 HSV 参数位于 `smart_grasp_bringup/config/perception.yaml`：
-
-```yaml
-detector_backend: hsv
-hsv_lower: [90, 80, 50]
-hsv_upper: [135, 255, 255]
-fixed_object_size: [0.060, 0.040, 0.040]
-```
-
-处理流程固定为：
-
-1. BGR 转 HSV，执行阈值分割、5x5 中值、3x3 开运算和 7x7 闭运算。
-2. 所有轮廓分别检查面积、凸度和矩形度，不直接只选最大轮廓。
-3. Mask 腐蚀后读取对齐深度，支持 `16UC1` 毫米和 `32FC1` 米。
-4. 使用 CameraInfo 反投影，在图像时间戳查询 `base_link` TF。
-5. 目标周围背景估计水平桌面；中心使用过滤点云，水平朝向只使用顶部8 mm
-   点云带做 PCA，避免蓝色侧面干扰方向。
-6. 不计算、不比较物体长宽高；`fixed_object_size` 只提供碰撞盒和抓取高度。
-7. 默认10帧窗口只检查位置和水平角；方向按180度对称轴处理，允许剔除最多
-   20%的角度离群帧，并发布窗口中值。默认过滤后位置极差不超过15 mm、
-   水平角极差不超过5度才稳定。
-8. 多个有效颜色目标前两名评分差小于 0.10 时拒绝抓取。
-
-YOLO-Seg 必须输出实例 Mask 和 `blue_block` 类别。模型缺失时节点启动失败，
-不会在真机动作过程中自动回退 HSV。
-
-### 106.5 x 76.5 x 30 mm 临时测试盒
-
-测试盒使用独立配置，不覆盖默认的 `60 x 40 x 40 mm` 目标。其点云离群半径
-为 80 mm，保留足够点云用于中心和方向估计；夹爪固定张开 90 mm、闭合
-目标 0 mm、力 0.5，图像时间TF最多等待250 ms。系统没有视觉尺寸门，
-`DetectedObject.size` 仅按配置发布
-`76.5 x 106.5 x 30 mm`，深度只计算中心和方向。桌面和标定门仍保持
-无效，不能直接执行真机抓取。
-
-该现场调试配置使用8帧窗口、30度角度内点半径和20度单姿态角度极差，解决
-424 x 240深度轮廓导致水平角抖动时长期无法产生 `stable=true` 的问题；位置
-极差仍限制为15 mm。它只放宽单姿态检测门，5-8姿态手眼外参验收仍严格使用
-位置极差20 mm、方向极差3度。
-
-```bash
-TEST_CONFIG=$HOME/grasp_ws/install/smart_grasp_bringup/share/smart_grasp_bringup/config
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  perception_config:=$TEST_CONFIG/perception_test_box_106x76x30.yaml \
-  grasp_config:=$TEST_CONFIG/grasp_test_box_106x76x30.yaml
-```
-
-## 7. 坐标系和手眼外参
-
-```text
-base_link -> tcp_link -> camera_link -> camera_color_optical_frame
-```
-
-- `base_link -> tcp_link`：来自 `/feedback/tcp_pose` 的动态 TF。
-- `tcp_link -> camera_link`：由 2026-07-25 的 `T_tcp_color_optical` 和 D405
-  内部 `T_camera_link_color_optical` 反算后发布。
-- 为避免 VMware/DDS 启动发现阶段丢失构造函数中的首个 `/tf_static` 样本，
-  `tcp_link -> camera_link` 启动后会以1秒周期有限重发，共发布10次。
-- `camera_link -> camera_color_optical_frame`：由 RealSense 驱动发布。
-- 图像必须使用自身时间戳查询 TF，不能把最新 TCP 与旧图像拼接。
-
-版本化外参位于：
-
-```text
 src/smart_grasp_bringup/config/handeye_20260725.yaml
+  手眼标定结果；validated: true 才允许打开真机执行门。
+
+src/smart_grasp_moveit/src/pick_server.cpp
+  抓取状态机与安全门实现。
 ```
 
-该文件当前保持 `validated: false`。固定目标不动，在 5-8 个机械臂观察姿态
-记录样本，位置极差小于 20 mm且方向极差小于 3 度后才能改为 true。
-
-## 8. MoveIt 抓取状态机
-
-```text
-MOVE_TO_OBSERVE -> DETECT -> VALIDATE_DEPTH_AND_POSE
--> GENERATE_CANDIDATES -> PLAN_PREGRASP -> EXEC_PREGRASP
--> REOBSERVE -> CARTESIAN_APPROACH -> CLOSE_GRIPPER
--> VERIFY_CONTACT -> ATTACH_OBJECT -> CARTESIAN_LIFT -> DONE
-```
-
-- 两个候选分别规划，选择无腕部跳变且路径评分更优的候选。
-- 预抓取使用 `RRTConnectkConfigDefault`。
-- 100 mm 接近和 50 mm 抬升使用 5 mm 笛卡尔步长，比例至少 95%。
-- PlanningScene 包含桌面和目标 OBB，只有两根夹指允许接触目标。
-- 轨迹首点与真实关节差值不得超过 0.05 rad，joint6 相邻点不得跳变
-  超过 0.5 rad。
-- 闭合后夹爪必须无故障，反馈宽度位于 32-48 mm才附着并抬升。
-- 到达预抓取点后重新识别同一 track；目标丢失或过期时停止。
-
-## 9. 安全门禁
-
-默认值位于 `smart_grasp_bringup/config/grasp.yaml`：
+当前测试盒机械臂观察位姿：
 
 ```yaml
-execution_allowed: false
-calibration_validated: false
-table_height: -999.0
-table_size: [0.0, 0.0, 0.0]
+observation_joint_positions: [-1.560708324, 1.875757707, -1.251889766, 0.776078105, 0.0, -0.005742133]
 ```
 
-以下任一条件都会拒绝后续动作：无目标、深度不足、多目标歧义、
-TF 缺失、位姿过期、外参未验证、桌面未配置、规划失败、起点不一致、腕部
-跳变、笛卡尔路径不足、夹爪故障、接触宽度异常或用户取消。
+默认回零位仍由官方 `/move_home` 管理；未覆盖 `home_joint_positions` 时使用 AGX
+驱动默认 home，也就是零位。抓取流程是先人工调用 `/move_home` 到官方 home，
+再由 pick action 去观察位；抓取成功并完成抬升后，会回到下面这个中间点。
+如果动作已经到达抓取位但闭爪、接触验证或抬升失败，也会先尝试回到同一收尾点位：
 
-系统一键启动时还固定：
-
-```text
-arm_type=piper_x
-effector_type=agx_gripper
-follow=true
-auto_control_gate=true
-auto_enable=false
-speed_percent=10
-gripper_default_effort=0.5
+```yaml
+post_pick_joint_positions: [-1.583554684, 0.186139365, -0.379190233, 0.550424486, -0.055798176, 0.0]
 ```
 
-## 10. 构建
+如果需要中间点后继续到人工示教的最终点，把当前 `/feedback/joint_states`
+读回的 6 个关节值填到：
+
+```yaml
+post_pick_final_joint_positions: [-0.034924038, 0.366536596, -0.541017162, 1.152074386, 0.019024089, 0.0]
+```
+
+## 现场记录
+
+2026-08-09 已完成一次真机成功抓取。完整参数快照和当时运行命令记录在
+`/home/guest/grasp_ws/now_question.md` 的
+`[2026-08-09] 真机成功抓取参数快照` 条目中；README 只保留复现流程和关键调参说明。
+
+## 构建
 
 ```bash
 cd ~/agx_arm_ws
@@ -252,208 +89,394 @@ cd ~/grasp_ws
 source /opt/ros/humble/setup.bash
 source ~/agx_arm_ws/install/setup.bash
 colcon build --symlink-install
-source install/setup.bash
+source env.sh
 ```
 
-测试：
+## 启动流程
+### 1. 加载环境
+
+每个新终端都先执行：
 
 ```bash
-cd ~/grasp_ws
-PYTHONPATH=src/smart_grasp python3 -m pytest -q src/smart_grasp/test
+source ~/grasp_ws/env.sh
 ```
 
-当前版本的结果是 9 项测试通过，四个抓取包和下层 MoveIt 修改均构建成功。
+### 2. 启动 CAN
 
-如果机械臂驱动在导入 `pyAgxArm` 时报告 SDK 文件语法错误，而
-`~/pyAgxArm` 源码检查正常，应重装本地源码生成的用户级安装副本，不要直接
-修改 `site-packages`：
+USB-CAN 适配器必须是 `can0`，波特率 1M。
+
+`~/can_bind.sh` 会一次性完成硬件识别、接口命名、波特率配置和启动。脚本优先按 USB-CAN 序列号识别机械臂适配器，识别不到序列号时才回退到唯一的 `gs_usb` 设备，避免开机枚举顺序变化导致 `can0/can1` 交换错误。配置前会先 `down`，所以不再需要第二次执行命令；并设置 `restart-ms 100`，BUS-OFF 后自动恢复。
 
 ```bash
-python3 -m pip install --user --force-reinstall --no-deps \
-  --no-build-isolation ~/pyAgxArm
-python3 -c "import pyAgxArm; print(pyAgxArm.__file__)"
+# 上电或 USB-CAN 热插拔后执行一次
+bash ~/can_bind.sh
 ```
 
-## 11. 启动和操作
+兼容旧习惯：`bash ~/can_connect.sh` 会直接调用同一套一键配置逻辑。
 
-安全默认启动：
+可选覆盖项：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/agx_arm_ws/install/setup.bash
-source ~/grasp_ws/install/setup.bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py
+USB_CAN_SERIAL=002000465547570420303135 CAN_BITRATE=1000000 CAN_RESTART_MS=100 bash ~/can_bind.sh
 ```
 
-如果机械臂驱动已在其他终端启动并正常发布 `/feedback/tcp_pose`，可避免重复
-启动驱动，只启动完整 RGB-D/TF 感知链，不启动 MoveIt 和动作服务器：
+常见 CAN 口调试命令：
 
 ```bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  use_driver:=false use_moveit:=false use_pick_server:=false use_rviz:=false
+# 查看接口状态 / 波特率 / 总线状态（ERROR-ACTIVE / ERROR-PASSIVE / BUS-OFF）
+ip -details link show can0
+
+# 查看收发包数、错误计数、丢帧等统计
+ip -s link show can0
+
+# 监听 can0 上的所有报文（Ctrl+C 退出）
+candump can0
+
+# 发送一帧测试报文（标准帧 ID=123，数据 DEADBEEF）
+cansend can0 123#DEADBEEF
+
+# 查看错误帧 / 总线异常（BUS-OFF 时会出现错误帧）
+candump -e can0
+
+# 清除 BUS-OFF / 重置错误计数器（接口需先 down）
+sudo ip link set can0 down
+sudo ip link set can0 type can restart
+sudo ip link set can0 up
+
+# 检查 USB-CAN 适配器是否识别到（gs_usb 设备）
+lsusb | grep -iE "can|gs_usb"
+dmesg | grep -i gs_usb
+
+# 关闭接口（排障或重新配置前）
+sudo ip link set can0 down
 ```
 
-机械臂尚未接入，或只需调试颜色识别时，使用独立二维相机调试模式。该模式
-不启动驱动、深度、手眼 TF、MoveIt 或抓取服务器，只验证彩色图和
-HSV/YOLO-Seg Mask。该模式默认使用 `640x480x30` 提高清晰度：
+### 3. 启动机械臂驱动
 
 ```bash
-ros2 launch smart_grasp_bringup camera_only.launch.py open_gui:=true
+bash ~/grasp_ws/scripts/start_arm_driver.sh
 ```
 
-若 VMware USB 转发出现持续掉线或帧率不足，可在不改源码的情况下临时降级：
+该脚本会先加载 `~/grasp_ws/env.sh`，再执行 `~/can_bind.sh` 确认 `can0` 为
+USB-CAN / 1M / `UP`，最后启动 `agx_arm_ctrl`。启动时会显式传入 6 维
+`home_joint_positions`，避免 ROS 2 launch 把 `[]` 空列表当成无类型参数而崩溃。
+
+如需临时覆盖参数，用环境变量，不要在命令行传 `home_joint_positions:=[]`：
 
 ```bash
-ros2 launch smart_grasp_bringup camera_only.launch.py \
-  color_profile:=424x240x30 open_gui:=true
+SPEED_PERCENT=10 AUTO_ENABLE=false bash ~/grasp_ws/scripts/start_arm_driver.sh
+HOME_JOINT_POSITIONS="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]" bash ~/grasp_ws/scripts/start_arm_driver.sh
+FIRMWARE_OVERRIDE=S-V1.8-8 bash ~/grasp_ws/scripts/start_arm_driver.sh
+RUN_CAN_BIND=false DRY_RUN=true bash ~/grasp_ws/scripts/start_arm_driver.sh
 ```
 
-也可以不自动打开 GUI，再单独查看调试话题：
+`FIRMWARE_OVERRIDE` 只在驱动从 CAN 读取固件版本超时时使用；CAN 和关节反馈正常后
+才允许继续使能和运动。
+
+确认机械臂反馈：
 
 ```bash
-ros2 launch smart_grasp_bringup camera_only.launch.py
-ros2 run rqt_image_view rqt_image_view /smart_grasp/debug_image
+ros2 topic hz /feedback/joint_states
 ```
 
-二维模式发布的检测结果带有 `CAMERA_ONLY_2D` 拒绝原因，不能作为三维抓取
-目标。接入机械臂后应恢复 `smart_grasp_system.launch.py` 完成深度、TF 和位姿
-验证。
+小测试：让机械臂前往官方 home / 零位。先确认工作区无人、平台停稳、急停可触及；驱动启动命令默认 `speed_percent=10`，适合低速检查。
 
-不接 CAN 的 MoveIt 集成检查：
+在另一个终端执行：
 
 ```bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  use_driver:=false use_camera:=false use_handeye_tf:=false \
-  use_tf_validator:=false use_rviz:=false
-```
+source ~/grasp_ws/env.sh
 
-外参验证，每个静止姿态调用一次：
+# 确认驱动服务已起来
+ros2 service list | grep -E "/enable_agx_arm|/move_home"
 
-```bash
-ros2 service call /smart_grasp/validation/record std_srvs/srv/Trigger "{}"
-```
-
-只规划抓取：
-
-```bash
-ros2 action send_goal /smart_grasp/pick \
-  smart_grasp_interfaces/action/PickObject \
-  "{target_class: blue_block, execute: false}" --feedback
-```
-
-真机执行前必须先填写桌面、通过 TF 验证，并人工检查 RViz。之后启动双门禁：
-
-```bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  execute:=true calibration_validated:=true
-
+# 使能机械臂
 ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: true}"
+
+# 前往官方 home / 零位
+ros2 service call /move_home std_srvs/srv/Empty "{}"
+
+# 观察关节反馈是否稳定
+ros2 topic echo /feedback/joint_states --once
+
+# 测试结束后可失能
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: false}"
 ```
 
-最后仍需显式发送 `execute: true` 的 PickObject Goal；启动本身不会抓取。
+### 4. 启动相机驱动
 
-## 12. YOLO-Seg 接入
+```bash
+bash ~/grasp_ws/scripts/start_camera_driver.sh
+```
 
-外部 GPU 电脑训练后复制：
+该脚本会先加载 `~/grasp_ws/env.sh`，再按 D405 序列号 `260322272696` 启动
+`realsense2_camera`。默认彩色流为 `848x480x30`，深度流为 `848x480x30`，
+并关闭 infra / pointcloud。当前 D405 / RealSense 驱动支持
+`848x480x30`，不支持 `848x480x10`；如果传 10 fps，RealSense 驱动会报
+`Given value ... is invalid` 并退回 `848x480x30`。
+
+如需临时覆盖参数，用环境变量；先用 `ros2 param describe` 确认设备支持列表：
+
+```bash
+RGB_PROFILE=848x480x30 DEPTH_PROFILE=848x480x30 bash ~/grasp_ws/scripts/start_camera_driver.sh
+ENABLE_INFRA=true INFRA_PROFILE=848x480x30 bash ~/grasp_ws/scripts/start_camera_driver.sh
+DRY_RUN=true bash ~/grasp_ws/scripts/start_camera_driver.sh
+```
+
+确认相机出图：
+
+```bash
+ros2 topic hz /camera/camera/color/image_rect_raw
+ros2 topic hz /camera/camera/aligned_depth_to_color/image_raw
+```
+
+小测试：查看当前设备实际支持的 profile。在另一个终端执行：
+
+```bash
+source ~/grasp_ws/env.sh
+ros2 param describe /camera/camera depth_module.depth_profile
+ros2 param describe /camera/camera rgb_camera.color_profile
+```
+
+### 5. 启动 MoveIt、感知和抓取服务
+
+```bash
+bash ~/grasp_ws/scripts/start_grasp_system.sh
+```
+
+该脚本会先加载 `~/grasp_ws/env.sh`，再启动 MoveIt、手眼 TF、感知节点和抓取
+action server。默认认为机械臂驱动和相机驱动已经由前两步单独启动，所以固定
+`use_driver=false`、`use_camera=false`。YOLO-Seg 和 HSV 是并列感知后端，默认
+使用 YOLO-Seg：`/home/guest/best.pt`、`yolo_class=1`、`yolo_confidence=0.7`。
+
+如需临时覆盖参数，用环境变量：
+
+```bash
+DETECTOR_BACKEND=yolo_seg YOLO_MODEL=/home/guest/best.pt bash ~/grasp_ws/scripts/start_grasp_system.sh
+DETECTOR_BACKEND=hsv bash ~/grasp_ws/scripts/start_grasp_system.sh
+USE_DRIVER=true FIRMWARE_OVERRIDE=S-V1.8-8 bash ~/grasp_ws/scripts/start_grasp_system.sh
+USE_RVIZ=true DRY_RUN=true bash ~/grasp_ws/scripts/start_grasp_system.sh
+```
+
+确认系统状态：
+
+```bash
+ros2 node list | grep -E "/move_group|/smart_grasp_detector|/smart_grasp_pick_server"
+ros2 action list | grep /smart_grasp/pick
+ros2 control list_controllers
+ros2 topic echo /smart_grasp/detections
+```
+
+### 6. 执行抓取
+
+先做 plan-only，不发真实运动：
+
+```bash
+bash ~/grasp_ws/scripts/pick_object.sh
+```
+
+该脚本会先加载 `~/grasp_ws/env.sh`，再发送 `/smart_grasp/pick` action。YOLO-Seg
+和 HSV 是并列感知后端，默认按 YOLO-Seg 发送 `target_class="1"`；切到 HSV 时
+发送 `target_class="blue_block"`。发送 goal 前会先检查 `/smart_grasp/pick`
+action server；如果第 5 步没有启动成功，脚本会打印当前 ROS graph 状态并退出，
+不会一直停在 `Waiting for an action server to become available...`。
+
+如需临时覆盖参数，用环境变量：
+
+```bash
+MODE=plan DETECTOR_BACKEND=yolo_seg bash ~/grasp_ws/scripts/pick_object.sh
+MODE=plan DETECTOR_BACKEND=hsv bash ~/grasp_ws/scripts/pick_object.sh
+DRY_RUN=true bash ~/grasp_ws/scripts/pick_object.sh
+```
+
+确认工作区无人、平台停稳、急停可触及时，再执行真机抓取：
+
+```bash
+MODE=execute bash ~/grasp_ws/scripts/pick_object.sh
+```
+
+规划真机抓取一体：
+
+```bash
+MODE=plan_execute bash ~/grasp_ws/scripts/pick_object.sh
+```
+
+`MODE=execute` 本身也会先规划再执行；`MODE=plan_execute` 是额外先跑一次
+plan-only，再发真实执行 goal。
+
+收尾：
+
+```bash
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: false}"
+```
+
+### 真机流程
+
+完整真机流程按这个顺序走。启动脚本都是前台进程，分别在独立终端保持运行。
+
+```bash
+# 终端 1：启动机械臂驱动
+source ~/grasp_ws/env.sh
+bash ~/grasp_ws/scripts/start_arm_driver.sh
+```
+
+```bash
+# 终端 2：启动相机驱动
+source ~/grasp_ws/env.sh
+bash ~/grasp_ws/scripts/start_camera_driver.sh
+```
+
+```bash
+# 终端 3：启动 MoveIt、手眼 TF、感知和抓取服务
+source ~/grasp_ws/env.sh
+bash ~/grasp_ws/scripts/start_grasp_system.sh
+```
+
+```bash
+# 终端 4：使能、回 home、执行抓取、收尾失能
+source ~/grasp_ws/env.sh
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: true}"
+ros2 service call /move_home std_srvs/srv/Empty "{}"
+
+MODE=execute bash ~/grasp_ws/scripts/pick_object.sh
+
+# 抓取成功并完成抬升后，会通过 MoveIt 回到 post_pick_joint_positions；
+# 若已经到达抓取位但接触验证/抬升失败，也会先尝试回到同一收尾点位。
+# 若配置了 post_pick_final_joint_positions，会再从中间点移动到该最终点；
+# 成功到达最终收尾点位后，pick_server 会自动打开夹爪放下物块。
+# 官方 /move_home 仍只用于人工回 home。
+
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: false}"
+```
+
+`/smart_grasp/pick` 在 `execute:=true` 时会先去配置好的观察位姿，再做识别、
+重观察、预抓、接近、闭爪和抬升。只读模式用 `execute:=false`，但仍要求机械臂
+已经在观察位姿上，不会自动从 home 过去。官方 `/move_home` 仍然是回零入口。
+
+### 抓取时间轨迹调参
+
+真机抓取的速度和丝滑度主要由
+`src/smart_grasp_bringup/config/grasp_test_box_60x40x40.yaml` 控制。普通
+MoveIt 关节规划段使用 `velocity_scaling` / `acceleration_scaling`；5 mm
+笛卡尔接近和 50 mm 抬升段额外做时间参数化，使用独立的
+`cartesian_velocity_scaling` / `cartesian_acceleration_scaling`；夹爪开合时间由
+`gripper_motion_time` 控制。
+
+保守真机检查档：
+
+```yaml
+# 单次 MoveIt 规划允许的最长时间；越大越稳，但失败路径会等更久。
+planning_time: 5.0
+# 每个目标规划尝试次数；越大越容易找到路径，但规划耗时增加。
+planning_attempts: 5
+# 普通关节轨迹的最大速度比例，0.02 表示使用关节限速的 2%。
+velocity_scaling: 0.02
+# 普通关节轨迹的最大加速度比例；建议先与 velocity_scaling 同步提高。
+acceleration_scaling: 0.02
+# 当前成功基线未对 computeCartesianPath 生成的接近/抬升轨迹重新做时间参数化。
+time_parameterize_cartesian: false
+# 5 mm 接近和 50 mm 抬升段的速度比例；建议低于或等于全局速度。
+cartesian_velocity_scaling: 0.02
+# 接近/抬升段的加速度比例；过高会让近物体动作显得突兀。
+cartesian_acceleration_scaling: 0.02
+# 等待稳定目标检测的最长时间；目标稳定后会提前返回，不是固定等待。
+stable_detection_wait_timeout: 3.0
+# 等待机械臂 action 结果和真实关节反馈到位的最长时间；不是固定等待。
+execution_settle_timeout: 60.0
+# 夹爪开合轨迹时长；减小会更快，但过小可能影响接触反馈稳定性。
+gripper_motion_time: 1.0
+# 夹爪控制器只支持 position；夹爪力来自机械臂驱动 gripper_default_effort=0.5。
+gripper_force: 0.5
+# 预先验证两个 180 度候选的完整笛卡尔接近；更稳但会增加规划时间。
+validate_all_candidate_approaches: true
+```
+
+接触宽度、目标姿态和路径都稳定后，可以逐项试这个提速档：
+
+```yaml
+planning_time: 3.0
+planning_attempts: 3
+velocity_scaling: 0.08
+acceleration_scaling: 0.08
+cartesian_velocity_scaling: 0.06
+cartesian_acceleration_scaling: 0.06
+stable_detection_wait_timeout: 1.5
+execution_settle_timeout: 8.0
+gripper_motion_time: 0.7
+gripper_force: 0.5
+```
+
+进一步缩短规划时间时，再考虑把 `validate_all_candidate_approaches` 从 `true`
+改成 `false`，这样只对最终选中的候选做笛卡尔接近验证。该项能省时间，但会减少
+候选预筛选，建议只在多次 `MODE=plan` 和低速 `MODE=execute` 都稳定后使用。
+
+`cartesian_step` 是笛卡尔路径插值精度，不是主要提速旋钮。优先调速度、加速度、
+检测等待和夹爪动作时间；每次只改一到两个参数，并用 action 结果里的
+`contact_width` 和服务端 `pick timing` 日志确认效果。
+
+### 可选一体启动
+
+如需确认现场安全后一条命令连驱动、相机、MoveIt、手眼 TF、感知和抓取服务
+一起启动：
+
+```bash
+USE_DRIVER=true USE_CAMERA=true bash ~/grasp_ws/scripts/start_grasp_system.sh
+```
+
+该脚本默认使用 YOLO-Seg、`/home/guest/best.pt`、60 x 40 x 40 mm 测试盒抓取
+配置、已验证手眼外参和 `use_rviz=false`。未显式设置时，默认
+`USE_DRIVER=false`、`USE_CAMERA=false`，不会重复拉起机械臂驱动和相机驱动。
+
+启动完成后仍需按第 6 步发送 `/smart_grasp/pick` goal；launch 本身不会自动抓取。
+
+## 安全门
+
+真实运动必须同时满足：
 
 ```text
-src/smart_grasp_bringup/models/
-|- blue_block_seg.pt
-|- model_metadata.yaml
-`- sha256.txt
+execute:=true
+calibration_validated:=true
+handeye_20260725.yaml 中 validated: true
+grasp_config 中 table_height / table_size / table_center_xy 已实测
 ```
 
-生成完整性记录：
+任一条件不满足，`pick_server` 会拒绝真实执行。
+
+默认真机 launch 使用 `use_live_feedback:=true`，MoveIt 订阅
+`/feedback/joint_states`，并启动 `agx_arm_control_gate`。安全门节点监听
+`/arm_controller/follow_joint_trajectory` 和
+`/gripper_controller/follow_joint_trajectory` 的 action status，只在轨迹或夹爪
+action active 时自动打开 `/control_enable`，action 结束后自动关闭。默认抓取流程
+不要长期手动打开 `/control_enable`；手动开关只用于直接调试 `/control/*` 底层控制话题。
+
+`/enable_agx_arm` 是硬件使能门；`/control_enable` 只是 `/control/*` 外部控制话题门。
+抓取状态机只有在闭爪、接触验证和抬升都成功后，才会继续通过 MoveIt 规划并执行到
+`post_pick_joint_positions`；该动作仍走 `arm_controller/follow_joint_trajectory`，
+因此继续受自动 `/control_enable` 门控保护。`/move_home` 是官方驱动服务入口，
+用于人工回官方 home / 零位，不是抓取完成后的内部返回路径；它不走 MoveIt 规划，
+也不依赖自动门控打开 `/control_enable`，但仍要求机械臂已硬件使能且不在示教模式。
+不要在 YAML 里写空列表 `[]`，ROS 2 参数注入无法稳定推断空序列类型。
+
+## 清理旧进程
+
+如果上一次 launch 异常退出，残留的 MoveIt、相机、抓取节点或 ROS 2 daemon
+可能继续占用 action、topic、相机设备或控制器，影响下一次启动。重启完整系统前
+可先在确认机械臂安全后清理：
 
 ```bash
-cd ~/grasp_ws/src/smart_grasp_bringup/models
-sha256sum blue_block_seg.pt > sha256.txt
+source ~/grasp_ws/env.sh
+
+# 若服务仍可用，先失能机械臂
+ros2 service call /enable_agx_arm std_srvs/srv/SetBool "{data: false}" || true
+
+# 清理 ROS 2 CLI daemon 缓存
+ros2 daemon stop || true
+ros2 daemon start
+
+# 查看残留进程
+ps -ef | grep -E "smart_grasp|move_group|realsense2_camera|agx_arm|rviz2" | grep -v grep
+
+# 只在确认这些确实是上一轮残留进程后执行
+pkill -f "smart_grasp|move_group|realsense2_camera|agx_arm|rviz2" || true
 ```
 
-启动：
-
-```bash
-ros2 launch smart_grasp_bringup smart_grasp_system.launch.py \
-  detector_backend:=yolo_seg \
-  yolo_model:=$HOME/grasp_ws/src/smart_grasp_bringup/models/blue_block_seg.pt
-```
-
-除检测后端外，深度位姿、固定目标几何、TF、稳定性、抓取候选和 MoveIt 均保持不变。
-
-## 13. 迁移到工控机
-
-只迁移源码和模型，不复制 `build/install/log`：
-
-```text
-agx_arm_ws/src/agx_arm_ros
-pyAgxArm
-grasp_ws
-handeye_ws/result/eye_in_hand_d405_px_connected_20260725.json  # 原始留档
-```
-
-推荐直接迁移两个 Git 仓库，检出本版本标签后在工控机重新构建。模型文件未
-纳入 Git，必须单独复制并用 `sha256sum -c sha256.txt` 验证。
-
-## 14. 版本追溯与回档
-
-本系统跨两个 Git 仓库：
-
-| 仓库 | 版本标签 | 内容 |
-|---|---|---|
-| `~/grasp_ws` | `smart-grasp-v0.2.0` | 四个抓取包、配置、文档和测试 |
-| `~/agx_arm_ws/src/agx_arm_ros` | `smart-grasp-integration-v0.2.0` | OMPL、RViz 参数透传及双控制器门控 |
-
-精确提交号记录在 `RELEASE_MANIFEST.md`。查看当前来源：
-
-```bash
-git -C ~/grasp_ws status --short
-git -C ~/grasp_ws log --oneline --decorate -5
-git -C ~/agx_arm_ws/src/agx_arm_ros status --short
-git -C ~/agx_arm_ws/src/agx_arm_ros log --oneline --decorate -5
-```
-
-推荐使用新分支进行无破坏回档，不使用 `reset --hard`：
-
-```bash
-git -C ~/grasp_ws switch -c rollback/smart-grasp-v0.2.0 smart-grasp-v0.2.0
-git -C ~/agx_arm_ws/src/agx_arm_ros switch \
-  -c rollback/smart-grasp-integration-v0.2.0 smart-grasp-integration-v0.2.0
-```
-
-若只需要撤销官方驱动集成，应在新分支上对清单中的集成提交执行
-`git revert <commit>`，不要覆盖官方仓库的其他提交或本地修改。
-
-注意：`grasp_ws` 在本版本之前没有 Git 仓库，`v0.2.0` 是首个可复现基线。
-它能保证今后的修改可追溯并可回到当前完整实现，但不能恢复未曾保存的早期
-原型内容。旧直接执行器仍保留在当前基线中，可用于对照，但默认不启动。
-
-后续每次可交付修改应遵循：修改源码 -> 更新测试 -> 更新 `CHANGELOG.md` ->
-提交 -> 更新 `RELEASE_MANIFEST.md` -> 打版本标签。禁止提交构建目录、日志、
-录制数据和大模型权重。
-
-## 15. 当前验收状态
-
-已完成：
-
-- ROS 接口生成和四包构建。
-- HSV、深度定位、固定抓取几何、位姿稳定性和 TF 极差已有单元测试。
-- 无 CAN 的 MoveIt 冒烟测试，确认 KDL、OMPL RRTConnect 和动作服务器加载。
-- 默认执行门禁、外参门禁、桌面门禁和控制门配置。
-
-待现场完成：
-
-- 不同光照、距离和角度下的 D405 图像检测率验收。
-- 桌面尺寸/高度实测。
-- 5-8 姿态手眼 TF 稳定性验收。
-- RViz 连续 20 次只规划测试。
-- 分级低速真机测试和 10 次至少 9 次抓取验收。
-
-## 16. 项目开发规则
-
-后续开发必须遵守 [PROJECT_RULES.md](PROJECT_RULES.md)：
-
-1. 不得擅自向 AgileX 或其他第三方官方仓库推送本地修改。
-2. 所有交付修改必须可追溯、可验证并能无破坏回档。
-3. 优先通过新增包、节点、适配器、配置或包装层实现功能；如果必须修改既有
-   核心逻辑、默认行为、公共接口或安全控制，须先说明原因、影响、测试和回档
-   方案，获得项目所有者明确审批后才能实施。
+清理后重新按真机流程启动机械臂驱动、相机驱动和抓取系统。
