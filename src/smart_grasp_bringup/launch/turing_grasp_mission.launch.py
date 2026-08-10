@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import subprocess
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -50,13 +51,22 @@ def generate_launch_description():
     trajectory_file = LaunchConfiguration("trajectory_file")
     map_yaml = LaunchConfiguration("map")
     robot_ip = LaunchConfiguration("robot_ip")
+    robot_type = LaunchConfiguration("robot_type")
     accid = LaunchConfiguration("accid")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    linear_x_full_scale_mps = LaunchConfiguration("linear_x_full_scale_mps")
+    linear_y_full_scale_mps = LaunchConfiguration("linear_y_full_scale_mps")
+    angular_z_full_scale_radps = LaunchConfiguration("angular_z_full_scale_radps")
+    max_x_ratio = LaunchConfiguration("max_x_ratio")
+    max_y_ratio = LaunchConfiguration("max_y_ratio")
+    max_z_ratio = LaunchConfiguration("max_z_ratio")
     path_topic = LaunchConfiguration("path_topic")
     cancel_topic = LaunchConfiguration("cancel_topic")
     base_frame = LaunchConfiguration("base_frame")
     lookahead_distance = LaunchConfiguration("lookahead_distance")
     target_speed = LaunchConfiguration("target_speed")
+    align_goal_yaw = LaunchConfiguration("align_goal_yaw")
+    goal_yaw_offset = LaunchConfiguration("goal_yaw_offset")
     pick_index = LaunchConfiguration("pick_index")
     stair_on_index = LaunchConfiguration("stair_on_index")
     stair_off_index = LaunchConfiguration("stair_off_index")
@@ -74,12 +84,34 @@ def generate_launch_description():
     grasp_start_delay = LaunchConfiguration("grasp_start_delay")
     mission_start_delay = LaunchConfiguration("mission_start_delay")
 
-    can_bind = ExecuteProcess(
-        cmd=["bash", can_bind_script],
-        additional_env={"CAN_IFACE": can_port},
-        output="screen",
-        condition=IfCondition(run_can_bind),
-    )
+    def prepare_can(context, *args, **kwargs):
+        if run_can_bind.perform(context).lower() not in {"1", "true", "yes", "on"}:
+            return []
+
+        script = can_bind_script.perform(context)
+        iface = can_port.perform(context)
+        if not os.path.isfile(script):
+            raise RuntimeError(f"CAN bind script does not exist: {script}")
+
+        env = os.environ.copy()
+        env["CAN_IFACE"] = iface
+        print(f"[turing_grasp_mission] configuring CAN synchronously: {script} -> {iface}")
+        subprocess.run(["bash", script], check=True, env=env)
+
+        result = subprocess.run(
+            ["ip", "-details", "link", "show", iface],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        details = result.stdout
+        if "UP" not in details or "bitrate 1000000" not in details:
+            raise RuntimeError(
+                f"{iface} is not UP at bitrate 1000000 after CAN setup"
+            )
+        return []
+
+    can_bind = OpaqueFunction(function=prepare_can)
 
     smart_grasp_system = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -122,8 +154,15 @@ def generate_launch_description():
             "use_chassis": use_chassis.perform(context),
             "use_map_server": use_map_server.perform(context),
             "robot_ip": robot_ip.perform(context),
+            "robot_type": robot_type.perform(context),
             "accid": accid.perform(context),
             "cmd_vel_topic": cmd_vel_topic.perform(context),
+            "linear_x_full_scale_mps": linear_x_full_scale_mps.perform(context),
+            "linear_y_full_scale_mps": linear_y_full_scale_mps.perform(context),
+            "angular_z_full_scale_radps": angular_z_full_scale_radps.perform(context),
+            "max_x_ratio": max_x_ratio.perform(context),
+            "max_y_ratio": max_y_ratio.perform(context),
+            "max_z_ratio": max_z_ratio.perform(context),
             "path_topic": path_topic.perform(context),
             "cancel_topic": cancel_topic.perform(context),
             "auto_execute_trajectory": "false",
@@ -134,6 +173,8 @@ def generate_launch_description():
             "base_frame": base_frame.perform(context),
             "lookahead_distance": lookahead_distance.perform(context),
             "target_speed": target_speed.perform(context),
+            "align_goal_yaw": align_goal_yaw.perform(context),
+            "goal_yaw_offset": goal_yaw_offset.perform(context),
         }
         rendered_args = " ".join(
             f"{name}:={shlex.quote(value)}" for name, value in launch_args.items()
@@ -172,13 +213,22 @@ def generate_launch_description():
             DeclareLaunchArgument("can_bind_script", default_value="/home/guest/can_bind.sh"),
             DeclareLaunchArgument("can_port", default_value="can0"),
             DeclareLaunchArgument("robot_ip", default_value="10.192.1.2"),
+            DeclareLaunchArgument("robot_type", default_value="tron2"),
             DeclareLaunchArgument("accid", default_value="SF_TRON2A_199"),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/nav_cmd_vel"),
+            DeclareLaunchArgument("linear_x_full_scale_mps", default_value="0.6"),
+            DeclareLaunchArgument("linear_y_full_scale_mps", default_value="0.3"),
+            DeclareLaunchArgument("angular_z_full_scale_radps", default_value="0.8"),
+            DeclareLaunchArgument("max_x_ratio", default_value="0.8"),
+            DeclareLaunchArgument("max_y_ratio", default_value="0.0"),
+            DeclareLaunchArgument("max_z_ratio", default_value="0.8"),
             DeclareLaunchArgument("path_topic", default_value="/trajectory_tracking/path"),
             DeclareLaunchArgument("cancel_topic", default_value="/trajectory_tracking/cancel"),
-            DeclareLaunchArgument("base_frame", default_value="base_link"),
+            DeclareLaunchArgument("base_frame", default_value="chassis_base_link"),
             DeclareLaunchArgument("lookahead_distance", default_value="0.45"),
             DeclareLaunchArgument("target_speed", default_value="0.25"),
+            DeclareLaunchArgument("align_goal_yaw", default_value="false"),
+            DeclareLaunchArgument("goal_yaw_offset", default_value="0.8726646259971648"),
             DeclareLaunchArgument("trajectory_file", default_value=default_trajectory_file),
             DeclareLaunchArgument("map", default_value=default_map),
             DeclareLaunchArgument("pick_index", default_value="2"),
@@ -215,6 +265,9 @@ def generate_launch_description():
                                 "frame_id": "map",
                                 "base_frame": ParameterValue(base_frame, value_type=str),
                                 "path_topic": ParameterValue(path_topic, value_type=str),
+                                "cancel_topic": ParameterValue(
+                                    cancel_topic, value_type=str
+                                ),
                                 "cmd_vel_topic": ParameterValue(
                                     cmd_vel_topic, value_type=str
                                 ),

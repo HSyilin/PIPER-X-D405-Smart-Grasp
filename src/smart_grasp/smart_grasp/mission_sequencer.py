@@ -18,6 +18,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from smart_grasp_interfaces.action import PickObject
+from std_msgs.msg import Empty as EmptyMsg
 from std_msgs.msg import String
 from std_srvs.srv import Empty, SetBool, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -44,6 +45,7 @@ class TuringGraspMissionSequencer(Node):
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("path_topic", "/trajectory_tracking/path")
+        self.declare_parameter("cancel_topic", "/trajectory_tracking/cancel")
         self.declare_parameter("cmd_vel_topic", "/nav_cmd_vel")
         self.declare_parameter("mode_response_topic", "/chassis/mode_response")
         self.declare_parameter("pick_action", "/smart_grasp/pick")
@@ -70,6 +72,7 @@ class TuringGraspMissionSequencer(Node):
         self.frame_id = self._str_param("frame_id")
         self.base_frame = self._str_param("base_frame")
         self.path_topic = self._str_param("path_topic")
+        self.cancel_topic = self._str_param("cancel_topic")
         self.cmd_vel_topic = self._str_param("cmd_vel_topic")
         self.pick_action = self._str_param("pick_action")
         self.target_class = self._str_param("target_class")
@@ -98,6 +101,7 @@ class TuringGraspMissionSequencer(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.path_pub = self.create_publisher(Path, self.path_topic, path_qos)
+        self.cancel_pub = self.create_publisher(EmptyMsg, self.cancel_topic, 10)
         self.zero_cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
         self.create_subscription(
@@ -137,11 +141,10 @@ class TuringGraspMissionSequencer(Node):
         if not self._follow_segment(before_pick, f"point 1 -> point {self.pick_index}"):
             return False
 
-        self._publish_zero_for(self.stop_hold_s)
         if not self._request_trigger(
             self.sitdown_client,
             "/limx/tron2/sitdown",
-            {"response_sitdown", "notify_sitdown"},
+            {"notify_sitdown"},
             "sitdown",
         ):
             return False
@@ -150,7 +153,7 @@ class TuringGraspMissionSequencer(Node):
         if not self._request_trigger(
             self.stand_client,
             "/limx/tron2/stand",
-            {"response_stand_mode", "notify_stand_mode"},
+            {"notify_stand_mode"},
             "stand",
         ):
             return False
@@ -166,7 +169,7 @@ class TuringGraspMissionSequencer(Node):
         if not self._request_trigger(
             self.walk_client,
             "/limx/tron2/walk",
-            {"response_walk_mode", "notify_walk_mode"},
+            {"notify_walk_mode"},
             "walk",
         ):
             return False
@@ -177,7 +180,6 @@ class TuringGraspMissionSequencer(Node):
         ):
             return False
 
-        self._publish_zero_for(self.stop_hold_s)
         if not self._set_stair_mode(True):
             return False
         self._sleep_with_spin(self.stabilize_after_stair_s)
@@ -187,17 +189,19 @@ class TuringGraspMissionSequencer(Node):
         ):
             return False
 
-        self._publish_zero_for(self.stop_hold_s)
         if not self._set_stair_mode(False):
             return False
         self._sleep_with_spin(self.stabilize_after_stair_s)
 
+        followed_after_stair = False
         if len(after_stair) >= 2 and not self._follow_segment(
             after_stair, f"point {self.stair_off_index} -> final point"
         ):
             return False
+        followed_after_stair = len(after_stair) >= 2
 
-        self._publish_zero_for(self.stop_hold_s)
+        if not followed_after_stair:
+            self._publish_zero_for(self.stop_hold_s)
         self.get_logger().info("Turing grasp mission complete.")
         return True
 
@@ -282,6 +286,7 @@ class TuringGraspMissionSequencer(Node):
                     self.get_logger().info(
                         f"Reached {label} goal within {distance:.3f} m."
                     )
+                    self._cancel_tracking()
                     self._publish_zero_for(self.stop_hold_s)
                     return True
             rclpy.spin_once(self, timeout_sec=0.05)
@@ -468,6 +473,10 @@ class TuringGraspMissionSequencer(Node):
         while rclpy.ok() and time.monotonic() < deadline:
             self.zero_cmd_pub.publish(Twist())
             rclpy.spin_once(self, timeout_sec=0.05)
+        self.zero_cmd_pub.publish(Twist())
+
+    def _cancel_tracking(self) -> None:
+        self.cancel_pub.publish(EmptyMsg())
         self.zero_cmd_pub.publish(Twist())
 
     def _sleep_with_spin(self, duration_s: float) -> None:

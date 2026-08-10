@@ -17,6 +17,10 @@
 .idea/
 .vscode/
 *~
+
+# AI tool state dirs
+.agents/
+.codex/
 *.swp
 
 # Local configuration snapshots

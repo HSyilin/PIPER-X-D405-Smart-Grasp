@@ -65,6 +65,9 @@ smart_grasp_pick_server:
     # should still fail below this window.
     contact_width_min: 0.036
     contact_width_max: 0.066
+    # Plastic objects can report unreliable final gripper width; keep releasing
+    # at the configured post-pick pose instead of aborting with CONTACT_NOT_DETECTED.
+    release_on_contact_not_detected: true
     gripper_timeout: 3.0
     gripper_action: /gripper_controller/follow_joint_trajectory
     joint_state_topic: /feedback/joint_states

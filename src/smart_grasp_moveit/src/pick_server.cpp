@@ -103,6 +103,7 @@ public:
     declare_parameter("gripper_motion_time", 1.0);
     declare_parameter("contact_width_min", 0.052);
     declare_parameter("contact_width_max", 0.068);
+    declare_parameter("release_on_contact_not_detected", false);
     declare_parameter("simulation_contact_width", 0.060);
     declare_parameter("gripper_timeout", 3.0);
     declare_parameter("arm_action", "/arm_controller/follow_joint_trajectory");
@@ -1488,6 +1489,8 @@ private:
       setStartFromTrajectory(approach);
     }
     double contact_width = 0.0;
+    bool contact_width_ignored = false;
+    std::string contact_width_message;
     if (do_execute) {
       feedback(handle, "CLOSE_GRIPPER", "closing AgileX gripper", candidates.size());
       const double close_width = get_parameter("simulation_mode").as_bool() ?
@@ -1510,12 +1513,23 @@ private:
       const double contact_width_max = get_parameter("contact_width_max").as_double();
       if (contact_width < contact_width_min || contact_width > contact_width_max)
       {
-        abortAfterGraspMotion(
-          handle, PickObject::Result::CONTACT_NOT_DETECTED,
+        contact_width_message =
           "gripper width " + std::to_string(contact_width) +
           " is outside the contact interval [" + std::to_string(contact_width_min) +
-          ", " + std::to_string(contact_width_max) + "]", object, candidates.size());
-        return;
+          ", " + std::to_string(contact_width_max) + "]";
+        if (!get_parameter("release_on_contact_not_detected").as_bool()) {
+          abortAfterGraspMotion(
+            handle, PickObject::Result::CONTACT_NOT_DETECTED,
+            contact_width_message, object, candidates.size());
+          return;
+        }
+        contact_width_ignored = true;
+        RCLCPP_WARN(get_logger(),
+          "%s; release_on_contact_not_detected=true, continuing to lift and release",
+          contact_width_message.c_str());
+        feedback(handle, "VERIFY_CONTACT_SKIPPED",
+          contact_width_message + "; continuing to lift and release",
+          candidates.size());
       }
       feedback(handle, "ATTACH_OBJECT", "attaching target to gripper", candidates.size());
       move_group_->attachObject(
@@ -1575,15 +1589,23 @@ private:
     const auto timing_summary = timing.summary();
     RCLCPP_INFO(get_logger(), "pick timing summary: %s", timing_summary.c_str());
     feedback(handle, "DONE",
-      do_execute ? "object released at configured post-pick sequence" :
+      do_execute ?
+      (contact_width_ignored ?
+      "object released at configured post-pick sequence; contact width check skipped" :
+      "object released at configured post-pick sequence") :
       "all paths planned without execution",
       candidates.size());
     auto result = std::make_shared<PickObject::Result>();
     result->success = true;
     result->error_code = PickObject::Result::OK;
-    result->message = do_execute ?
-      "pick completed and released at configured post-pick sequence; timing: " + timing_summary :
-      "plan-only completed; timing: " + timing_summary;
+    if (do_execute) {
+      result->message = contact_width_ignored ?
+        "pick completed and released at configured post-pick sequence; " +
+        contact_width_message + " was ignored; timing: " + timing_summary :
+        "pick completed and released at configured post-pick sequence; timing: " + timing_summary;
+    } else {
+      result->message = "plan-only completed; timing: " + timing_summary;
+    }
     result->object_pose.header = object.header;
     result->object_pose.pose = object.pose.pose;
     result->grasp_pose.header = object.header;
