@@ -101,9 +101,22 @@ source env.sh
 source ~/grasp_ws/env.sh
 ```
 
-### 2. 启动 CAN
+### 2. 启动完整抓取任务
 
-USB-CAN 适配器必须是 `can0`，波特率 1M。
+推荐直接启动融合 launch。launch 会先同步执行 CAN 绑定，确认 `can0` 已 `UP` 且波特率为 1M，然后再启动导航、机械臂驱动和任务编排器，避免 AGX 驱动抢在 CAN 配置完成前启动。
+
+```bash
+ros2 launch smart_grasp_bringup turing_grasp_mission.launch.py
+```
+
+可选覆盖轨迹文件：
+
+```bash
+ros2 launch smart_grasp_bringup turing_grasp_mission.launch.py \
+  trajectory_file:=/home/guest/funny_lidar_slam/data/trajectories/example_path.yaml
+```
+
+### 3. CAN 调试
 
 `~/can_bind.sh` 会一次性完成硬件识别、接口命名、波特率配置和启动。脚本优先按 USB-CAN 序列号识别机械臂适配器，识别不到序列号时才回退到唯一的 `gs_usb` 设备，避免开机枚举顺序变化导致 `can0/can1` 交换错误。配置前会先 `down`，所以不再需要第二次执行命令；并设置 `restart-ms 100`，BUS-OFF 后自动恢复。
 
@@ -480,3 +493,4 @@ pkill -f "smart_grasp|move_group|realsense2_camera|agx_arm|rviz2" || true
 ```
 
 清理后重新按真机流程启动机械臂驱动、相机驱动和抓取系统。
+# PIPER-X-D405-Smart-Grasp
